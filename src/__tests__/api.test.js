@@ -3533,6 +3533,7 @@ describe('NansenAPI', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const delays = setTimeoutSpy.mock.calls.map(c => c[1]).filter(ms => typeof ms === 'number');
       // only the jitter (< 1s), not baseDelayMs * 2^attempt
+      expect(delays.length).toBeGreaterThan(0);
       expect(Math.max(...delays)).toBeLessThan(1000);
       setTimeoutSpy.mockRestore();
       vi.useRealTimers();
