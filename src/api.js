@@ -607,7 +607,7 @@ function calculateBackoff(attempt, baseDelayMs, maxDelayMs, retryAfterMs = null)
   // If server specifies retry-after, wait at least that long (plus some jitter).
   // maxDelayMs only bounds the local exponential backoff; the caller decides
   // whether a Retry-After is too long to wait for at all.
-  if (retryAfterMs) {
+  if (retryAfterMs !== null && retryAfterMs !== undefined) {
     const jitter = Math.random() * 1000;
     return retryAfterMs + jitter;
   }
@@ -1040,7 +1040,7 @@ export class NansenAPI {
         // longer than we are willing to block; the error already carries
         // retryAfterMs so the caller can come back later.
         if (shouldRetry && attempt < maxRetries && retryOnStatus.includes(response.status)
-          && !(retryAfterMs && retryAfterMs > maxRetryAfterMs)) {
+          && !(retryAfterMs !== null && retryAfterMs > maxRetryAfterMs)) {
           const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs, retryAfterMs);
           await sleep(delayMs);
           continue;

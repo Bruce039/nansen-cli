@@ -3511,6 +3511,33 @@ describe('NansenAPI', () => {
       vi.useRealTimers();
     });
 
+    it('should retry right away on Retry-After: 0 instead of falling back to exponential backoff', async () => {
+      if (LIVE_TEST) return;
+
+      vi.useFakeTimers();
+      const setTimeoutSpy = vi.spyOn(global, 'setTimeout');
+      const rateLimitResponse = {
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '0']]),
+        json: async () => ({ error: 'Rate limited' })
+      };
+      rateLimitResponse.headers.get = (name) => (name.toLowerCase() === 'retry-after' ? '0' : null);
+      const successResponse = { ok: true, json: async () => ({ data: [] }) };
+      mockFetch.mockResolvedValueOnce(rateLimitResponse).mockResolvedValueOnce(successResponse);
+
+      const promise = api.smartMoneyNetflow({ chains: ['solana'] });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const delays = setTimeoutSpy.mock.calls.map(c => c[1]).filter(ms => typeof ms === 'number');
+      // only the jitter (< 1s), not baseDelayMs * 2^attempt
+      expect(Math.max(...delays)).toBeLessThan(1000);
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    });
+
     it('should not retry when Retry-After exceeds maxRetryAfterMs', async () => {
       if (LIVE_TEST) return;
 
