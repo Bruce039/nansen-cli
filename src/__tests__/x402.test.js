@@ -251,6 +251,39 @@ describe('createPaymentSignatures — policy guard integration', () => {
     vi.doUnmock('../x402-svm.js');
   });
 
+  it('12b. an option that fails to build is skipped with its reason on stderr', async () => {
+    const req = makeRequirement(10_000n);
+
+    const createEvmSpy = vi.fn(() => {
+      throw new Error('feePayer must be a facilitator account distinct from the paying wallet');
+    });
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const results = [];
+    for await (const item of createPaymentSignatures(makeResponse(req), 'https://api.nansen.ai/test')) {
+      results.push(item);
+    }
+
+    expect(results).toHaveLength(0);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/\[x402\] Skipping eip155:8453 option: feePayer must be a facilitator/),
+    );
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
+
   it('13. permit2-exact preflight checks allowance against resolvePaymentAmount, not raw empty amount', async () => {
     // Regression: hasPermit2Allowance must be called with the guard's resolved
     // amount, not requirement.amount directly — otherwise amount: "" coerces to
