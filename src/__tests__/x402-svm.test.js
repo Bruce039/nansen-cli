@@ -111,6 +111,25 @@ describe('getSolanaRpcUrl', () => {
     expect(() => getSolanaRpcUrl('solana:bogus')).toThrow(/Unsupported Solana network/);
     expect(() => getSolanaRpcUrl('solana:not-a-real-network-id')).toThrow(/Unsupported Solana network/);
   });
+
+  // The mainnet branch hardcoded the public endpoint, so a user's
+  // NANSEN_SOLANA_RPC (honoured by transfer, trading and limit orders) was
+  // ignored for x402 blockhash fetches and balance checks.
+  it('honours NANSEN_SOLANA_RPC for mainnet like every other Solana path', async () => {
+    const previous = process.env.NANSEN_SOLANA_RPC;
+    process.env.NANSEN_SOLANA_RPC = 'https://private.rpc.example/solana';
+    vi.resetModules();
+    try {
+      const fresh = await import('../x402-svm.js');
+      expect(fresh.getSolanaRpcUrl('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe('https://private.rpc.example/solana');
+      // Devnet/testnet stay on their fixed endpoints.
+      expect(fresh.getSolanaRpcUrl('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')).toContain('devnet');
+    } finally {
+      if (previous === undefined) delete process.env.NANSEN_SOLANA_RPC;
+      else process.env.NANSEN_SOLANA_RPC = previous;
+      vi.resetModules();
+    }
+  });
 });
 
 describe('buildUnsignedSvmTransaction', () => {
