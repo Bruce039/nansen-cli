@@ -225,11 +225,11 @@ async function getPrivyEvmWallet(client) {
     const walletsDir = path.join(process.env.HOME || process.env.USERPROFILE || "", ".nansen", "wallets");
     const configPath = path.join(walletsDir, "config.json");
     if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const config = readWalletJson(configPath);
       if (config.defaultWallet) {
         const walletFile = path.join(walletsDir, `${config.defaultWallet}.json`);
         if (fs.existsSync(walletFile)) {
-          const data = JSON.parse(fs.readFileSync(walletFile, "utf8"));
+          const data = readWalletJson(walletFile);
           if (data.provider === "privy" && data.evm?.privyWalletId) {
             return client.getWallet(data.evm.privyWalletId);
           }
@@ -256,11 +256,11 @@ async function getPrivySolanaWallet(client) {
     const walletsDir = path.join(process.env.HOME || process.env.USERPROFILE || "", ".nansen", "wallets");
     const configPath = path.join(walletsDir, "config.json");
     if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const config = readWalletJson(configPath);
       if (config.defaultWallet) {
         const walletFile = path.join(walletsDir, `${config.defaultWallet}.json`);
         if (fs.existsSync(walletFile)) {
-          const data = JSON.parse(fs.readFileSync(walletFile, "utf8"));
+          const data = readWalletJson(walletFile);
           if (data.provider === "privy" && data.solana?.privyWalletId) {
             return client.getWallet(data.solana.privyWalletId);
           }
