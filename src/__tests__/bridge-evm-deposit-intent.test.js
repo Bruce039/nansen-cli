@@ -327,6 +327,15 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
     expect(e.code).toBe('UNEXPECTED_ACTION');
   });
 
+  it('refuses [approve, approve, deposit] — two approves before the deposit', () => {
+    // Both approves are incomplete and precede the deposit, so the order guard
+    // (sawDeposit) never fires — this is the shape that exercises the count
+    // check's `approveCount > 1` branch on its own.
+    const e = caught(() => preflightEvmBridgeSteps([approveStep(), approveStep(), depositStep()], intent));
+    expect(e.message).toMatch(/at most one approve and exactly one deposit/);
+    expect(e.code).toBe('UNEXPECTED_ACTION');
+  });
+
   it('refuses a plan with two deposits sharing one approve', () => {
     expect(() => preflightEvmBridgeSteps([approveStep(), depositStep(), depositStep()], intent))
       .toThrow(/at most one approve and exactly one deposit/);
