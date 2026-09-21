@@ -284,20 +284,23 @@ function orderWiresToOrderAction(orderWires, builder, grouping = 'na') {
 // limit computed below, to match the reference implementation. A take-profit set
 // just past the mark on a market order can therefore land inside the slippage
 // band; that is accepted here rather than rejected.
+//
+// Throws a coded CommandError like every other guard in this file and in
+// perp.js, so an agent can branch on `code` instead of matching the message.
 function validateTpsl({ isBuy, price, takeProfit, stopLoss }) {
   if (isBuy) {
     if (stopLoss != null && stopLoss >= price) {
-      throw new Error(`Stop-loss for a long must be below the entry price (${price}). Got: ${stopLoss}`);
+      throw new CommandError(`Stop-loss for a long must be below the entry price (${price}). Got: ${stopLoss}`, 'INVALID_INPUT');
     }
     if (takeProfit != null && takeProfit <= price) {
-      throw new Error(`Take-profit for a long must be above the entry price (${price}). Got: ${takeProfit}`);
+      throw new CommandError(`Take-profit for a long must be above the entry price (${price}). Got: ${takeProfit}`, 'INVALID_INPUT');
     }
   } else {
     if (stopLoss != null && stopLoss <= price) {
-      throw new Error(`Stop-loss for a short must be above the entry price (${price}). Got: ${stopLoss}`);
+      throw new CommandError(`Stop-loss for a short must be above the entry price (${price}). Got: ${stopLoss}`, 'INVALID_INPUT');
     }
     if (takeProfit != null && takeProfit >= price) {
-      throw new Error(`Take-profit for a short must be below the entry price (${price}). Got: ${takeProfit}`);
+      throw new CommandError(`Take-profit for a short must be below the entry price (${price}). Got: ${takeProfit}`, 'INVALID_INPUT');
     }
   }
 }
@@ -508,8 +511,9 @@ export function buildUsdClassTransferAction({ amount, toPerp, nonce, network = h
   // rejection after signing. An amount that large is a mistake either way, so
   // refuse here.
   if (!Number.isFinite(amount) || amount <= 0 || amount >= 1e21) {
-    throw new Error(
+    throw new CommandError(
       `Invalid usdClassTransfer amount: ${amount}. Must be a positive number below 1e21.`,
+      'INVALID_INPUT',
     );
   }
   const strAmount = amount.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
