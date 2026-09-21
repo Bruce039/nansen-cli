@@ -13,14 +13,25 @@
  * correct way instead of each hand-rolling its own parser.
  */
 export function compareSemver(a, b) {
+  // A prerelease or build suffix ("1.2.10-beta.1", "1.2.10+sha") used to be
+  // parsed with Number(), which turned the suffixed component into NaN and
+  // then into 0 — so "1.2.10-beta" compared below "1.2.9". Split the suffix
+  // off first and read each component as a plain integer. A prerelease
+  // ranks below the release it precedes; two prereleases of the same core
+  // compare equal, which is all the callers here need.
   const parse = v => {
-    const parts = String(v).replace(/^v/, '').split('.').map(Number);
-    return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+    const str = String(v).replace(/^v/, '');
+    const dash = str.search(/[-+]/);
+    const core = dash === -1 ? str : str.slice(0, dash);
+    const prerelease = dash !== -1 && str[dash] === '-';
+    const parts = core.split('.').map(p => parseInt(p, 10));
+    return [parts[0] || 0, parts[1] || 0, parts[2] || 0, prerelease];
   };
-  const [aM, am, ap] = parse(a);
-  const [bM, bm, bp] = parse(b);
+  const [aM, am, ap, aPre] = parse(a);
+  const [bM, bm, bp, bPre] = parse(b);
   if (aM !== bM) return aM > bM ? 1 : -1;
   if (am !== bm) return am > bm ? 1 : -1;
   if (ap !== bp) return ap > bp ? 1 : -1;
+  if (aPre !== bPre) return aPre ? -1 : 1;
   return 0;
 }
