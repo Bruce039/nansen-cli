@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { assertEvmBridgeStepIntent, preflightEvmBridgeSteps } from '../bridge.js';
+import { assertEvmBridgeStepIntent, preflightEvmBridgeSteps, BRIDGE_DEPOSIT_TARGETS } from '../bridge.js';
 import { encodeApproveCalldata } from '../trade-validation.js';
 
 // Real captured shapes (base -> hyperliquid, USDC): the Relay router is both
@@ -378,5 +378,23 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
     const e = caught(() => preflightEvmBridgeSteps([approveStep(), tamperedDeposit], intent));
     expect(e.message).toMatch(/signing wallet is/);
     expect(e.code).toBe('SIGNER_MISMATCH');
+  });
+});
+
+describe('BRIDGE_DEPOSIT_TARGETS — constant invariant', () => {
+  // The approve-branch catch in assertEvmBridgeStepIntent codes everything it
+  // sees as AMOUNT_MISMATCH, on the premise that the spender was already
+  // validated against a well-formed entry here. A malformed entry would make
+  // encodeApproveCalldata's spender-shape error surface as AMOUNT_MISMATCH at
+  // runtime; a non-lowercased one would silently break the `.has(spender
+  // .toLowerCase())` lookup. Pin both invariants so a careless edit to the
+  // constant fails at CI instead.
+  it('every entry is a valid, lowercased 20-byte address', () => {
+    for (const [chain, set] of Object.entries(BRIDGE_DEPOSIT_TARGETS)) {
+      expect(set).toBeInstanceOf(Set);
+      for (const addr of set) {
+        expect(addr, `${chain} entry ${addr}`).toMatch(/^0x[0-9a-f]{40}$/);
+      }
+    }
   });
 });
