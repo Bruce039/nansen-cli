@@ -95,8 +95,9 @@ describe('isSvmNetwork', () => {
 });
 
 describe('getSolanaRpcUrl', () => {
-  it('should return mainnet URL for the canonical mainnet CAIP-2 id', () => {
-    expect(getSolanaRpcUrl('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toContain('mainnet');
+  it('should return the shared mainnet RPC for the canonical mainnet CAIP-2 id', async () => {
+    const { CHAIN_RPCS } = await import('../rpc-urls.js');
+    expect(getSolanaRpcUrl('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe(CHAIN_RPCS.solana);
   });
 
   it('should return devnet URL for the canonical devnet CAIP-2 id', () => {
