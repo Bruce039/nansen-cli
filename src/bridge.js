@@ -969,6 +969,12 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
   }
   // arg2 (amount) must not exceed what the user requested (defense in depth —
   // the scoped approval already bounds the pull; captures show exact equality).
+  if (dep.amount <= 0n) {
+    throw new CommandError(
+      context + ' would deposit ' + dep.amount + '; deposit amount must be positive. Refusing to sign. Request a new quote.',
+      'AMOUNT_MISMATCH',
+    );
+  }
   const requestedAmount = requireAmountAnchor(intent, context);
   if (dep.amount > requestedAmount) {
     throw new CommandError(
@@ -1005,14 +1011,26 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
 export function preflightEvmBridgeSteps(steps, intent) {
   let approveCount = 0;
   let depositCount = 0;
+  let sawDeposit = false;
   for (const step of steps) {
     for (const item of step.items || []) {
       if (item.status === 'complete') continue;   // don't re-check / re-count resumed steps
       assertEvmBridgeStepIntent(item.data, intent, `Bridge step "${step.id}"`);
       // assertEvmBridgeStepIntent above already proved each item is exactly one
       // of these two shapes, so this classification is total.
-      if (isErc20Approve(item.data.data)) approveCount++;
-      else depositCount++;
+      if (isErc20Approve(item.data.data)) {
+        if (sawDeposit) {
+          throw new CommandError(
+            `Bridge plan has an incomplete approve transaction after the deposit; every incomplete approve must precede the deposit. `
+              + `Refusing to sign — a trailing approve could leave a live router allowance after the deposit is already consumed. Request a new quote.`,
+            'UNEXPECTED_ACTION',
+          );
+        }
+        approveCount++;
+      } else {
+        sawDeposit = true;
+        depositCount++;
+      }
     }
   }
   if (approveCount > 1 || depositCount !== 1) {

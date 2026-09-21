@@ -167,6 +167,13 @@ describe('assertEvmBridgeStepIntent — deposit leg', () => {
     expect(e.code).toBe('AMOUNT_MISMATCH');
   });
 
+  it('refuses a zero-amount deposit', () => {
+    const txData = { to: ROUTER, data: depositCalldata({ amount: 0n }), value: '0' };
+    const e = caught(() => assertEvmBridgeStepIntent(txData, intent));
+    expect(e.message).toMatch(/deposit amount must be positive/);
+    expect(e.code).toBe('AMOUNT_MISMATCH');
+  });
+
   it('accepts arg2 exactly at the requested amount', () => {
     const txData = { to: ROUTER, data: depositCalldata({ amount: 2000000n }), value: '0' };
     expect(() => assertEvmBridgeStepIntent(txData, intent)).not.toThrow();
@@ -281,13 +288,42 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
     expect(() => preflightEvmBridgeSteps([depositStep()], intent)).not.toThrow();
   });
 
+  it('refuses a plan with an incomplete approve after the deposit', () => {
+    const e = caught(() => preflightEvmBridgeSteps([depositStep(), approveStep()], intent));
+    expect(e.message).toMatch(/approve transaction after the deposit/);
+    expect(e.code).toBe('UNEXPECTED_ACTION');
+  });
+
+  it('refuses a single step that bundles deposit before approve', () => {
+    const bundled = {
+      id: 'bundle',
+      items: [
+        { status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0' } },
+        { status: 'incomplete', data: { to: USDC, data: approveCalldata(ROUTER, 2000000n), value: '0' } },
+      ],
+    };
+    const e = caught(() => preflightEvmBridgeSteps([bundled], intent));
+    expect(e.message).toMatch(/approve transaction after the deposit/);
+    expect(e.code).toBe('UNEXPECTED_ACTION');
+  });
+
+  it('refuses deposit, complete approve, then incomplete approve', () => {
+    const completeApprove = {
+      id: 'complete-approve',
+      items: [{ status: 'complete', data: { to: USDC, data: approveCalldata(ROUTER, 2000000n), value: '0' } }],
+    };
+    const e = caught(() => preflightEvmBridgeSteps([depositStep(), completeApprove, approveStep()], intent));
+    expect(e.message).toMatch(/approve transaction after the deposit/);
+    expect(e.code).toBe('UNEXPECTED_ACTION');
+  });
+
   it('refuses a plan that repeats [approve, deposit] to amplify past the cap', () => {
     // Every item passes per-item binding (spender/router/token/amount all valid),
     // but two deposits of `requested` each would pull 2x what the user reviewed —
     // ERC-20 approve overwrites the allowance, so the second pair drains again.
     const plan = [approveStep(), depositStep(), approveStep(), depositStep()];
     const e = caught(() => preflightEvmBridgeSteps(plan, intent));
-    expect(e.message).toMatch(/at most one approve and exactly one deposit/);
+    expect(e.message).toMatch(/approve transaction after the deposit/);
     expect(e.code).toBe('UNEXPECTED_ACTION');
   });
 
