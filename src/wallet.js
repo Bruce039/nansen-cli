@@ -220,7 +220,13 @@ export function mkdirPrivateSync(dir) {
     if (path.dirname(cur) === cur) break;
   }
   for (const d of missing) {
-    fs.mkdirSync(d, { mode: 0o700 });
+    try {
+      fs.mkdirSync(d, { mode: 0o700 });
+    } catch (err) {
+      // Another nansen process may have created it between the existence
+      // check and here; the chmod below still applies.
+      if (err.code !== 'EEXIST') throw err;
+    }
     fs.chmodSync(d, 0o700);
   }
 }
@@ -500,7 +506,7 @@ export function createWallet(name, password) {
         .filter(f => f.endsWith('.json') && f !== 'config.json')
         .filter(f => {
           try {
-            const data = JSON.parse(fs.readFileSync(path.join(walletsDir, f), 'utf8'));
+            const data = readWalletJson(path.join(walletsDir, f));
             return !data.provider || data.provider === 'local';
           } catch { return true; }
         });
@@ -1000,7 +1006,7 @@ export function buildWalletCommands(deps = {}) {
           // dir and cannot traverse. deleteWallet() re-validates below.
           let isPrivy = false;
           try {
-            const data = JSON.parse(fs.readFileSync(getWalletFile(name), 'utf8'));
+            const data = readWalletJson(getWalletFile(name));
             if (data.provider === 'privy') isPrivy = true;
           } catch { /* invalid/missing name; deleteWallet will validate and throw */ }
 
@@ -1062,7 +1068,7 @@ export function buildWalletCommands(deps = {}) {
                 // getWalletFile() runs validateWalletName(), confining the path to
                 // the wallets dir; an invalid name throws and is ignored here, and
                 // the real wallet load downstream validates again.
-                const data = JSON.parse(fs.readFileSync(getWalletFile(walletName), 'utf8'));
+                const data = readWalletJson(getWalletFile(walletName));
                 if (data.provider === 'privy') isPrivyWallet = true;
               }
             } catch { /* ignore */ }

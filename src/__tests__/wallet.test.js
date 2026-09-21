@@ -24,6 +24,7 @@ import {
   promptPassword,
   writeWalletJsonAtomic,
   readWalletJson,
+  mkdirPrivateSync,
 } from '../wallet.js';
 import { keccak256 } from '../crypto.js';
 
@@ -393,6 +394,22 @@ describe('wallet file durability', () => {
     const leftovers = fs.readdirSync(walletsDir()).filter(f => f.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
     expect(readWalletJson(path.join(walletsDir(), 'alice.json')).name).toBe('alice');
+  });
+
+  it('tolerates a directory created concurrently by another process', () => {
+    const dir = path.join(tempDir, 'race', 'wallets');
+    const realMkdir = fs.mkdirSync;
+    const spy = vi.spyOn(fs, 'mkdirSync').mockImplementation((p, opts) => {
+      // Simulate the other process winning the race for the leaf directory.
+      if (p === dir) realMkdir(p, { recursive: true });
+      return realMkdir(p, opts);
+    });
+    try {
+      expect(() => mkdirPrivateSync(dir)).not.toThrow();
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('keeps the previous file intact when the atomic write fails', () => {
