@@ -3557,7 +3557,8 @@ describe('NansenAPI', () => {
       let result;
       const promise = api.smartMoneyNetflow({ chains: ['solana'] }).then(r => { result = r; });
       // A 5xx Retry-After is advisory: the wait is capped at maxDelayMs (30s), not 3600s.
-      await vi.advanceTimersByTimeAsync(31_000);
+      // 30s cap + up to 1s jitter, so advance comfortably past 31s.
+      await vi.advanceTimersByTimeAsync(32_000);
       expect(mockFetch).toHaveBeenCalledTimes(2);
       await vi.runAllTimersAsync();
       await promise;
