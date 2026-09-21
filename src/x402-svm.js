@@ -180,6 +180,15 @@ export function buildUnsignedSvmTransaction(
   if (!feePayerStr) {
     throw new Error('feePayer is required in requirements.extra for SVM transactions');
   }
+  // The wire layout below is fixed at two signers: the facilitator at slot 0
+  // and this wallet at slot 1. A server-supplied feePayer equal to the payer
+  // collapses that to one signer, and the transaction would carry two
+  // signature slots against a header that requires one — rejected at
+  // broadcast with no useful message. Refuse it here instead so the caller
+  // can move on to the next payment option.
+  if (feePayerStr === walletAddress) {
+    throw new Error(`feePayer must be a facilitator account distinct from the paying wallet (${walletAddress}); refusing to build a self-sponsored x402 transaction`);
+  }
 
   const mint = requirements.asset;
   const amount = BigInt(resolvePaymentAmount(requirements));
@@ -237,12 +246,17 @@ export function buildUnsignedSvmTransaction(
     },
   ];
 
-  const { messageBytes } = buildMessageV0({
+  const { messageBytes, numRequiredSignatures } = buildMessageV0({
     feePayer: feePayerStr,
     instructions,
     recentBlockhash,
     accounts: null,
   });
+  // Belt and braces for the slot layout: the header must agree with the two
+  // placeholders written below, or the transaction is malformed.
+  if (numRequiredSignatures !== 2) {
+    throw new Error(`x402 SVM transaction requires exactly 2 signers (facilitator + payer); message header requires ${numRequiredSignatures}`);
+  }
 
   // Build transaction: compact-u16(numSignatures) + signatures + message
   // 2 signatures: [facilitator placeholder (64 zero bytes), client placeholder (64 zero bytes)]

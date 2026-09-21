@@ -10,6 +10,7 @@ import {
   isSvmNetwork,
   getSolanaRpcUrl,
   buildUnsignedSvmTransaction,
+  createSvmPaymentPayload,
   fetchRecentBlockhash,
 } from '../x402-svm.js';
 
@@ -158,6 +159,25 @@ describe('buildUnsignedSvmTransaction', () => {
     const badReqs = { ...requirements, extra: {} };
     expect(() => buildUnsignedSvmTransaction(badReqs, wallet.address, blockhash))
       .toThrow('feePayer is required');
+  });
+
+  // The wire format always wrote two signature slots while buildMessageV0
+  // counted signers from the account map. A server-controlled feePayer equal
+  // to the payer collapsed the header to one required signature, producing a
+  // transaction that fails sanitization at broadcast with no useful message.
+  it('refuses a feePayer equal to the paying wallet instead of building a malformed transaction', () => {
+    const selfPay = { ...requirements, extra: { feePayer: wallet.address } };
+    expect(() => buildUnsignedSvmTransaction(selfPay, wallet.address, blockhash))
+      .toThrow(/feePayer must be a facilitator account distinct from the paying wallet/);
+    expect(() => createSvmPaymentPayload(selfPay, wallet.privateKey, wallet.address, 'https://r', blockhash))
+      .toThrow(/distinct from the paying wallet/);
+  });
+
+  it('header signer count always matches the two signature slots', () => {
+    const { messageBytes, txBase64 } = buildUnsignedSvmTransaction(requirements, wallet.address, blockhash);
+    const txBytes = Buffer.from(txBase64, 'base64');
+    expect(txBytes[0]).toBe(2); // compact-u16 signature count
+    expect(messageBytes[1]).toBe(2); // header numRequiredSignatures
   });
 
   it('transaction has two 64-byte zero signature slots', () => {
