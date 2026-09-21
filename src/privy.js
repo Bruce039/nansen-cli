@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 import { parsePaymentRequirements } from "./x402.js";
 import { isEvmNetwork } from "./x402-evm.js";
+import { mkdirPrivateSync, readWalletJson, writeWalletJsonAtomic } from "./wallet.js";
 import { evaluatePaymentRequirement, resolvePaymentAmount, resolvePayTo } from "./x402-policy.js";
 import {
   isSvmNetwork,
@@ -190,22 +191,20 @@ export async function createPrivyWalletPair(name) {
     createdAt: new Date().toISOString(),
   };
 
-  if (!fs.existsSync(walletsDir)) {
-    fs.mkdirSync(walletsDir, { mode: 0o700, recursive: true });
-  }
+  mkdirPrivateSync(walletsDir);
 
   // Write config before wallet file so a crash doesn't leave an orphan without a default entry
   const configPath = path.join(walletsDir, "config.json");
   let config = { defaultWallet: null, passwordHash: null };
   if (fs.existsSync(configPath)) {
-    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config = readWalletJson(configPath);
   }
   if (!config.defaultWallet) {
     config.defaultWallet = name;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+    writeWalletJsonAtomic(configPath, config);
   }
 
-  fs.writeFileSync(walletFile, JSON.stringify(walletData, null, 2), { mode: 0o600 });
+  writeWalletJsonAtomic(walletFile, walletData);
 
   return walletData;
 }
