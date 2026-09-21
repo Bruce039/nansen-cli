@@ -1036,12 +1036,18 @@ export class NansenAPI {
           ...(meta?.rateLimit && { rateLimit: meta.rateLimit })
         });
         
-        // Retry on specific status codes, unless the server asked us to wait
-        // longer than we are willing to block; the error already carries
-        // retryAfterMs so the caller can come back later.
+        // Retry on specific status codes. A 429 Retry-After is binding: retrying
+        // earlier only burns attempts on more 429s, so wait it out in full or,
+        // if it is longer than we are willing to block, give up right away (the
+        // error already carries retryAfterMs so the caller can come back later).
+        // A Retry-After on a 5xx is only advisory and keeps the old maxDelayMs cap.
+        const isRateLimit = response.status === 429;
         if (shouldRetry && attempt < maxRetries && retryOnStatus.includes(response.status)
-          && !(retryAfterMs !== null && retryAfterMs > maxRetryAfterMs)) {
-          const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs, retryAfterMs);
+          && !(isRateLimit && retryAfterMs !== null && retryAfterMs > maxRetryAfterMs)) {
+          const serverDelayMs = retryAfterMs === null || isRateLimit
+            ? retryAfterMs
+            : Math.min(retryAfterMs, maxDelayMs);
+          const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs, serverDelayMs);
           await sleep(delayMs);
           continue;
         }

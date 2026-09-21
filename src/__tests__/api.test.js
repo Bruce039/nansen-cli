@@ -3539,6 +3539,37 @@ describe('NansenAPI', () => {
       vi.useRealTimers();
     });
 
+    it('should still retry a 5xx whose Retry-After exceeds maxRetryAfterMs, capped at maxDelayMs', async () => {
+      if (LIVE_TEST) return;
+
+      vi.useFakeTimers();
+      const setTimeoutSpy = vi.spyOn(global, 'setTimeout');
+      const serverErrorResponse = {
+        ok: false,
+        status: 503,
+        headers: new Map([['retry-after', '3600']]),
+        json: async () => ({ error: 'Service unavailable' })
+      };
+      serverErrorResponse.headers.get = (name) => (name.toLowerCase() === 'retry-after' ? '3600' : null);
+      const successResponse = { ok: true, json: async () => ({ data: [] }) };
+      mockFetch.mockResolvedValueOnce(serverErrorResponse).mockResolvedValueOnce(successResponse);
+
+      let result;
+      const promise = api.smartMoneyNetflow({ chains: ['solana'] }).then(r => { result = r; });
+      // A 5xx Retry-After is advisory: the wait is capped at maxDelayMs (30s), not 3600s.
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(result).toBeDefined();
+      const delays = setTimeoutSpy.mock.calls.map(c => c[1]).filter(ms => typeof ms === 'number' && ms >= 1000);
+      expect(delays.length).toBeGreaterThan(0);
+      expect(Math.max(...delays)).toBeLessThanOrEqual(31_000);
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    });
+
     it('should not retry when Retry-After exceeds maxRetryAfterMs', async () => {
       if (LIVE_TEST) return;
 
