@@ -5192,6 +5192,73 @@ describe('profiler trace command', () => {
     expect(mockApi.addressCounterparties).not.toHaveBeenCalled();
   });
 
+  // --width multiplies with --depth at every hop, so an unbounded width on a
+  // hub-style address turned one command into hundreds of counterparties
+  // calls; --depth has been clamped to 1-5 since #629 but width never was.
+  it('should clamp width to 1-50 range', async () => {
+    const mockApi = {
+      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
+    };
+    const commands = buildCommands({});
+
+    const high = await commands['profiler'](['trace'], mockApi, {}, {
+      address: '0x0000000000000000000000000000000000000001',
+      width: '5000',
+      delay: '0',
+    });
+    expect(high.width).toBe(50);
+    expect(mockApi.addressCounterparties).toHaveBeenCalledWith(expect.objectContaining({
+      pagination: { page: 1, per_page: 50 },
+    }));
+
+    const zero = await commands['profiler'](['trace'], mockApi, {}, {
+      address: '0x0000000000000000000000000000000000000001',
+      width: '0',
+      delay: '0',
+    });
+    expect(zero.width).toBe(1);
+  });
+
+  it('should stop expanding the graph after 1000 nodes and report truncation', async () => {
+    // Every address returns 50 fresh counterparties: depth 3 × width 50 would
+    // otherwise visit 1 + 50 + 2500 + ... nodes and make thousands of calls.
+    let counter = 0;
+    const mockApi = {
+      addressCounterparties: vi.fn().mockImplementation(async () => ({
+        counterparties: Array.from({ length: 50 }, () => ({
+          counterparty_address: '0x' + (++counter).toString(16).padStart(40, '0'),
+          volume_usd: 1,
+        })),
+      })),
+    };
+    const commands = buildCommands({});
+    const result = await commands['profiler'](['trace'], mockApi, {}, {
+      address: '0x0000000000000000000000000000000000000001',
+      depth: '3',
+      width: '50',
+      delay: '0',
+    });
+
+    expect(result.stats.nodes_visited).toBe(1000);
+    expect(result.stats.truncated).toBe(true);
+    // Only queued nodes are expanded, so calls stay bounded by the node cap.
+    expect(mockApi.addressCounterparties.mock.calls.length).toBeLessThanOrEqual(1000);
+  });
+
+  it('reports truncated: false for a small traversal', async () => {
+    const mockApi = {
+      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [{ counterparty_address: '0x0000000000000000000000000000000000000002' }] }),
+    };
+    const commands = buildCommands({});
+    const result = await commands['profiler'](['trace'], mockApi, {}, {
+      address: '0x0000000000000000000000000000000000000001',
+      depth: '2',
+      delay: '0',
+    });
+    expect(result.stats.truncated).toBe(false);
+    expect(result.stats.nodes_visited).toBe(2);
+  });
+
   it.each(['abc', '2.5', 'Infinity', '9007199254740992'])(
     'should reject malformed --width value %s before querying counterparties',
     async (width) => {
