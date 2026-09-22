@@ -93,6 +93,23 @@ describe('Amount Parsing', () => {
     expect(parseAmount('1.123456789', 6)).toBe(1123456n);
   });
 
+  // A zero result used to be returned and then signed and broadcast: a
+  // native send paying gas to move nothing, a 0-token transfer, or a limit
+  // order created with inputAmount "0".
+  test('rejects a literal zero', () => {
+    for (const z of ['0', '0.0', '00', '0.000']) {
+      expect(() => parseAmount(z, 6)).toThrow('Amount must be greater than zero');
+    }
+  });
+
+  test('rejects a positive amount that truncates to zero at the token precision', () => {
+    expect(() => parseAmount('0.0000001', 6)).toThrow(/below the smallest unit.*6 decimals.*at least 0\.000001/);
+    expect(() => parseAmount('0.5', 0)).toThrow(/below the smallest unit.*0 decimals.*at least 1/);
+    // Exactly the smallest unit is fine.
+    expect(parseAmount('0.000001', 6)).toBe(1n);
+    expect(parseAmount('1', 0)).toBe(1n);
+  });
+
   test('rejects negative amounts', () => {
     expect(() => parseAmount('-1.5', 6)).toThrow('Amount must be positive');
     expect(() => parseAmount('-0.1', 18)).toThrow('Amount must be positive');
@@ -561,6 +578,14 @@ describe('sendTokens integration', () => {
   });
 
   describe('Error handling', () => {
+    test('rejects a zero amount before touching the RPC', async () => {
+      fetch.mockImplementation(async () => ({ json: () => Promise.resolve({ result: '0x0' }) }));
+      await expect(sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0', chain: 'base', password: 'test' }))
+        .rejects.toThrow('Amount must be greater than zero');
+      const sendCall = fetch.mock.calls.find(c => JSON.parse(c[1].body).method === 'eth_sendRawTransaction');
+      expect(sendCall).toBeUndefined();
+    });
+
     test('rejects invalid EVM address', async () => {
       await expect(sendTokens({ to: 'bad', amount: '1', chain: 'evm', password: 'test' })).rejects.toThrow('Invalid recipient');
     });

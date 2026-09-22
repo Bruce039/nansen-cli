@@ -55,7 +55,18 @@ function parseAmount(amountStr, decimals) {
   const parts = str.split('.');
   const whole = parts[0] || '0';
   let frac = (parts[1] || '').padEnd(decimals, '0').slice(0, decimals);
-  return BigInt(whole) * (10n ** BigInt(decimals)) + BigInt(frac);
+  const raw = BigInt(whole) * (10n ** BigInt(decimals)) + BigInt(frac);
+  // Zero base units would still be signed and broadcast: a native send that
+  // pays gas to move nothing, a token transfer of 0, or a limit order created
+  // with inputAmount "0". Refuse both a literal zero and a positive amount
+  // that truncates to zero at this token's precision.
+  if (raw === 0n) {
+    if (/^0+(\.0+)?$/.test(str)) throw new Error('Amount must be greater than zero');
+    throw new Error(
+      `Amount ${str} is below the smallest unit of this token (${decimals} decimals) and would send nothing. Use at least ${decimals === 0 ? '1' : '0.' + '0'.repeat(decimals - 1) + '1'}.`,
+    );
+  }
+  return raw;
 }
 
 function formatAmount(rawAmount, decimals) {
