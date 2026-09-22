@@ -801,9 +801,8 @@
                 },
                 "width": {
                   "type": "integer",
-                  "minimum": 0,
                   "default": 10,
-                  "description": "Counterparties to follow at each hop"
+                  "description": "Counterparties to follow at each hop (1-50); valid integers outside the range are clamped. Traversal stops expanding after 1000 nodes and reports stats.truncated"
                 },
                 "days": {
                   "type": "integer",
