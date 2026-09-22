@@ -64,7 +64,16 @@ describe('compareSemver', () => {
   it('ranks a prerelease below the release it precedes', () => {
     expect(compareSemver('1.3.0-beta.1', '1.3.0')).toBe(-1);
     expect(compareSemver('1.3.0', '1.3.0-beta.1')).toBe(1);
+  });
+
+  // Documents a known gap, NOT desired behaviour: prerelease identity is not
+  // compared, so any two prereleases of the same core read as equal. SemVer
+  // §11 says beta < rc and rc.2 < rc.10. If you are reading this because you
+  // implemented that precedence and this test failed, the test is what's
+  // wrong — delete it.
+  it('does not order two prereleases of the same core (known limitation)', () => {
     expect(compareSemver('1.3.0-beta.1', '1.3.0-rc.1')).toBe(0);
+    expect(compareSemver('1.3.0-rc.2', '1.3.0-rc.10')).toBe(0);
   });
 
   it('ignores build metadata', () => {
