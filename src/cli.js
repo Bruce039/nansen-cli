@@ -856,6 +856,25 @@ function normalizeTraceDepth(raw) {
   return Math.max(1, Math.min(value, 5));
 }
 
+// --width is the fan-out at every hop, so it multiplies with --depth: an
+// unbounded width on a hub-style address (exchange, router) turns one
+// invocation into hundreds of counterparties calls and credits. Clamp it the
+// way --depth is clamped, and stop expanding the graph past MAX_TRACE_NODES
+// as a backstop for the depth × width product.
+const MAX_TRACE_WIDTH = 50;
+const MAX_TRACE_NODES = 1000;
+
+function normalizeTraceWidth(raw) {
+  const value = parseNonNegativeSafeIntegerOption(
+    'width',
+    { width: raw },
+    {},
+    10,
+  );
+
+  return Math.max(1, Math.min(value, MAX_TRACE_WIDTH));
+}
+
 export async function traceCounterparties(api, params = {}) {
   let { address, chain = 'ethereum', depth = 2, width = 10, days = 30, delayMs = 1000 } = params;
   if (!address) {
@@ -877,12 +896,14 @@ export async function traceCounterparties(api, params = {}) {
     throw new NansenError(validation.error, ErrorCode.INVALID_ADDRESS);
   }
   const clampedDepth = normalizeTraceDepth(depth);
+  const clampedWidth = normalizeTraceWidth(width);
   const visited = new Set();
   const nodes = [];
   const edges = [];
   const queue = [{ addr: address, hop: 0 }];
   visited.add(address);
   nodes.push(address);
+  let truncated = false;
 
   while (queue.length > 0) {
     const { addr, hop } = queue.shift();
@@ -891,12 +912,12 @@ export async function traceCounterparties(api, params = {}) {
     try {
       const result = await api.addressCounterparties({
         address: addr, chain, days,
-        pagination: { page: 1, per_page: width },
+        pagination: { page: 1, per_page: clampedWidth },
         requestOptions: { autoPaginate: false },
       });
 
       const counterparties = result?.data?.results || result?.counterparties || result?.data || [];
-      const items = Array.isArray(counterparties) ? counterparties.slice(0, width) : [];
+      const items = Array.isArray(counterparties) ? counterparties.slice(0, clampedWidth) : [];
 
       for (const cp of items) {
         const cpAddr = cp.counterparty_address || cp.address || cp.counterparty;
@@ -910,6 +931,11 @@ export async function traceCounterparties(api, params = {}) {
         });
 
         if (!visited.has(cpAddr)) {
+          if (nodes.length >= MAX_TRACE_NODES) {
+            // The edge is still recorded; the node is just not expanded.
+            truncated = true;
+            continue;
+          }
           visited.add(cpAddr);
           nodes.push(cpAddr);
           queue.push({ addr: cpAddr, hop: hop + 1 });
@@ -923,9 +949,14 @@ export async function traceCounterparties(api, params = {}) {
   }
 
   return {
-    root: address, chain, depth: clampedDepth,
+    root: address, chain, depth: clampedDepth, width: clampedWidth,
     nodes, edges,
-    stats: { nodes_visited: nodes.length, edges_found: edges.length, max_depth_reached: Math.max(0, ...edges.map(e => e.hop)) },
+    stats: {
+      nodes_visited: nodes.length,
+      edges_found: edges.length,
+      max_depth_reached: Math.max(0, ...edges.map(e => e.hop)),
+      truncated,
+    },
   };
 }
 
