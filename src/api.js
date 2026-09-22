@@ -631,6 +631,10 @@ const DEFAULT_RETRY_OPTIONS = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
+  // Longest server Retry-After we are willing to wait out. A longer one is not
+  // retried at all: retrying earlier than the server asked only burns the
+  // remaining attempts on more 429s.
+  maxRetryAfterMs: 120000,
   retryOnStatus: [429, 500, 502, 503, 504],
 };
 
@@ -667,10 +671,12 @@ export function sleep(ms) {
  * Calculate delay with exponential backoff and jitter
  */
 function calculateBackoff(attempt, baseDelayMs, maxDelayMs, retryAfterMs = null) {
-  // If server specifies retry-after, use it (with some jitter)
-  if (retryAfterMs) {
+  // If server specifies retry-after, wait at least that long (plus some jitter).
+  // maxDelayMs only bounds the local exponential backoff; the caller decides
+  // whether a Retry-After is too long to wait for at all.
+  if (retryAfterMs !== null && retryAfterMs !== undefined) {
     const jitter = Math.random() * 1000;
-    return Math.min(retryAfterMs + jitter, maxDelayMs);
+    return retryAfterMs + jitter;
   }
   
   // Exponential backoff: base * 2^attempt + random jitter
@@ -862,7 +868,7 @@ export class NansenAPI {
   async request(endpoint, body = {}, options = {}) {
     this.lastEndpoint = endpoint;
     const url = `${this.baseUrl}${endpoint}`;
-    const { maxRetries, baseDelayMs, maxDelayMs, retryOnStatus } = this.retryOptions;
+    const { maxRetries, baseDelayMs, maxDelayMs, maxRetryAfterMs, retryOnStatus } = this.retryOptions;
     const shouldRetry = options.retry !== false; // Allow disabling retry per-request
     
     // Check cache first (if enabled and not bypassed)
@@ -1104,9 +1110,18 @@ export class NansenAPI {
           ...(meta?.rateLimit && { rateLimit: meta.rateLimit })
         });
         
-        // Retry on specific status codes
-        if (shouldRetry && attempt < maxRetries && retryOnStatus.includes(response.status)) {
-          const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs, retryAfterMs);
+        // Retry on specific status codes. A 429 Retry-After is binding: retrying
+        // earlier only burns attempts on more 429s, so wait it out in full or,
+        // if it is longer than we are willing to block, give up right away (the
+        // error already carries retryAfterMs so the caller can come back later).
+        // A Retry-After on a 5xx is only advisory and keeps the old maxDelayMs cap.
+        const isRateLimit = response.status === 429;
+        if (shouldRetry && attempt < maxRetries && retryOnStatus.includes(response.status)
+          && !(isRateLimit && retryAfterMs !== null && retryAfterMs > maxRetryAfterMs)) {
+          const serverDelayMs = retryAfterMs === null || isRateLimit
+            ? retryAfterMs
+            : Math.min(retryAfterMs, maxDelayMs);
+          const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs, serverDelayMs);
           await sleep(delayMs);
           continue;
         }
