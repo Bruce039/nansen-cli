@@ -24,6 +24,7 @@ import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorRepo
 import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
 import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
+import { setDebugEnabled } from './debug.js';
 import { createRequire } from 'module';
 import * as readline from 'readline';
 
@@ -192,7 +193,7 @@ export const VALUELESS_FLAGS = new Set([
   'enrich', 'full', 'human', 'enabled', 'disabled', 'expert', 'json', 'offline',
   'no-simulate', 'no-verify-outcome', 'no-revoke-excessive-allowance', 'dry-run',
   'send-api-key', 'all', 'max', 'gasless', 'auto-slippage', 'unsafe-no-password',
-  'reveal', 'yes',
+  'reveal', 'yes', 'debug',
 ]);
 
 export function parseArgs(args) {
@@ -1041,6 +1042,9 @@ COMMANDS:
 OPTIONS: --chain --limit --sort field:dir --fields a,b --days N --filters '{}'
 FORMAT:  --pretty --table --format csv --stream (NDJSON)
 RETRY:   --no-retry --retries N --cache --cache-ttl N
+DEBUG:   --debug (or NANSEN_DEBUG=1) traces each request on stderr: method, URL,
+         status, time-to-headers (TTFB), retries, request id. Never prints
+         credentials or bodies.
 
 TRADING:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -2294,7 +2298,10 @@ export async function runCLI(rawArgs, deps = {}) {
   const subArgs = positional.slice(1);
   const subcommand = subArgs[0];
 
-
+  // `--debug` turns on the request trace for the rest of the process. Set
+  // before anything can make a request, and only when the flag is present so
+  // NANSEN_DEBUG=1 still decides on its own when the flag is absent.
+  if (flags.debug) setDebugEnabled(true);
 
   const pretty = flags.pretty || flags.p;
   const table = flags.table || flags.t;
