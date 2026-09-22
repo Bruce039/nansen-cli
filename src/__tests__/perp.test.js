@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../wallet.js', () => ({
   showWallet: vi.fn(),
@@ -44,6 +44,63 @@ const baseOrder = {
   type: 'limit',
   wallet: 'does-not-matter',
 };
+
+// Asset ids, szDecimals, positions and balances all come from the Nansen
+// proxy, which serves Hyperliquid mainnet data, while signing and submission
+// follow NANSEN_HL_API_URL. Pointing the CLI at the testnet therefore signed
+// mainnet asset indices into testnet actions and showed mainnet positions for
+// a testnet account.
+describe('perp network guard', () => {
+  const TESTNET = 'https://api.hyperliquid-testnet.xyz';
+  let previous;
+
+  beforeEach(() => {
+    previous = process.env.NANSEN_HL_API_URL;
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env.NANSEN_HL_API_URL;
+    else process.env.NANSEN_HL_API_URL = previous;
+  });
+
+  const apiStub = { request: vi.fn() };
+
+  beforeEach(() => {
+    showWallet.mockReturnValue({ name: 'x', evm: '0x' + '1'.repeat(40), provider: 'local' });
+    getWalletConfig.mockReturnValue({ passwordHash: null, defaultWallet: 'x' });
+  });
+
+  it('refuses a perp read when NANSEN_HL_API_URL points at the testnet', async () => {
+    process.env.NANSEN_HL_API_URL = TESTNET;
+    apiStub.request.mockClear();
+    await expect(cmds.positions([], apiStub, {}, { wallet: 'does-not-matter' }))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_NETWORK' });
+    expect(apiStub.request).not.toHaveBeenCalled();
+  });
+
+  it('refuses an order on the testnet before any signing', async () => {
+    process.env.NANSEN_HL_API_URL = TESTNET;
+    submitExchange.mockClear();
+    await expect(cmds.order([], apiStub, {}, baseOrder))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_NETWORK' });
+    expect(submitExchange).not.toHaveBeenCalled();
+  });
+
+  it('names the configured URL and how to undo it', async () => {
+    process.env.NANSEN_HL_API_URL = TESTNET;
+    await expect(cmds.order([], apiStub, {}, baseOrder))
+      .rejects.toThrow(/mainnet-only.*hyperliquid-testnet.*Unset NANSEN_HL_API_URL/s);
+  });
+
+  it('leaves a local mock URL (treated as mainnet) working', async () => {
+    process.env.NANSEN_HL_API_URL = 'http://127.0.0.1:8080';
+    apiStub.request.mockClear();
+    apiStub.request.mockRejectedValue(new Error('proxy unreachable in test'));
+    // Reaches the proxy read instead of being refused by the network guard.
+    await expect(cmds.positions([], apiStub, {}, { wallet: 'does-not-matter' })).rejects.toThrow();
+    expect(apiStub.request).toHaveBeenCalled();
+  });
+});
 
 describe('perp order validation', () => {
   it('rejects a typo in --side instead of silently opening a short', async () => {
