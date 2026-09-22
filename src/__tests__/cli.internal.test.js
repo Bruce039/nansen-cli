@@ -31,6 +31,7 @@ import {
   parseAddressList
 } from '../cli.js';
 import { parseCsvOption, parseObjectOption } from '../query-options.js';
+import { enableAutoPagination, MAX_PAGES_LIMIT } from '../auto-paginate.js';
 import {
   formatAlertsTable,
   buildAlertData,
@@ -2910,6 +2911,40 @@ describe('buildCommands', () => {
       expect(page2.data.pagination.page).toBe(1);
     });
 
+    it('returns every matching client-side search result with --paginate', async () => {
+      const data = Array.from({ length: 30 }, (_, i) => ({ token_symbol: `PEPE${i}`, price_usd: i }));
+      const pagination = { page: 1, pages_fetched: 3, next_page: null, complete: true };
+      const mockApi = { tokenScreener: vi.fn().mockResolvedValue({ data, pagination }) };
+
+      const result = await commands['token'](
+        ['screener'],
+        mockApi,
+        { paginate: true },
+        { chain: 'ethereum', search: 'pepe', limit: '10', page: '1' },
+      );
+
+      expect(result.data).toEqual(data);
+      expect(result.pagination).toBe(pagination);
+      expect(mockApi.tokenScreener).toHaveBeenCalledWith(
+        expect.objectContaining({ pagination: { page: 1, per_page: 10 } }),
+      );
+    });
+
+    it('starts paginated client-side search traversal at the requested page', async () => {
+      const mockApi = { tokenScreener: vi.fn().mockResolvedValue({ data: [] }) };
+
+      await commands['token'](
+        ['screener'],
+        mockApi,
+        { paginate: true },
+        { chain: 'ethereum', search: 'pepe', limit: '10', page: '3' },
+      );
+
+      expect(mockApi.tokenScreener).toHaveBeenCalledWith(
+        expect.objectContaining({ pagination: { page: 3, per_page: 10 } }),
+      );
+    });
+
     it('should widen the search candidate fetch when the requested page is past the default 500', async () => {
       const mockApi = { tokenScreener: vi.fn().mockResolvedValue({ data: [] }) };
       await commands['token'](['screener'], mockApi, {}, { chain: 'ethereum', search: 'pepe', limit: '100', page: '7' });
@@ -3224,6 +3259,23 @@ describe('runCLI', () => {
     expect(errors).toEqual(['ℹ️  Plan notice', 'Credits: 7 (this call)']);
     expect(outputs).toHaveLength(1);
     expect(JSON.parse(outputs[0])).toEqual({ success: true, data: { data: [] } });
+  });
+
+  it('does not duplicate response metadata when post-request formatting fails', async () => {
+    const deps = {
+      ...mockDeps(),
+      NansenAPIClass: function MockAPI() {
+        this.lastResponseMeta = { credits: { used: 5, remaining: 100, cost: 7 } };
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      },
+    };
+
+    const result = await runCLI(['smart-money', 'netflow', '--fields', '[]'], deps);
+
+    expect(result.type).toBe('error');
+    expect(errors).toEqual(['Credits: 7 (this call)']);
+    expect(outputs).toHaveLength(1);
   });
 });
 
@@ -4738,6 +4790,14 @@ describe('formatStream', () => {
     expect(JSON.parse(result)).toEqual({ single: true, value: 42 });
   });
 
+  it('should keep a failed envelope with row-like data on one JSON line', () => {
+    const failure = { success: false, error: 'partial failure', data: [{ id: 1 }, { id: 2 }] };
+    const result = formatStream(failure);
+
+    expect(result).toBe(JSON.stringify(failure));
+    expect(result.split('\n')).toHaveLength(1);
+  });
+
   it('should return empty string for empty array', () => {
     expect(formatStream([])).toBe('');
   });
@@ -5833,6 +5893,9 @@ describe('batchProfile', () => {
     expect(result.results).toHaveLength(2);
     expect(result.results[0].labels).toBeDefined();
     expect(result.results[0].balance).toBeDefined();
+    expect(mockApi.addressLabels).toHaveBeenCalledWith(expect.objectContaining({
+      requestOptions: { autoPaginate: false },
+    }));
   });
 
   it('should unwrap the v1 labels response into a labels array', async () => {
@@ -5902,11 +5965,45 @@ describe('batchProfile', () => {
     });
 
     expect(result.results[0].pnl).toBeDefined();
-    expect(mockApi.addressPnl).toHaveBeenCalled();
+    expect(mockApi.addressPnl).toHaveBeenCalledWith(expect.objectContaining({
+      requestOptions: { autoPaginate: false },
+    }));
   });
 });
 
 describe('traceCounterparties', () => {
+  it('keeps each width-bounded internal lookup to one request under the global wrapper', async () => {
+    const rawRequest = vi.fn(async (_endpoint, body) => ({
+      counterparties: [
+        { counterparty_address: '0x0000000000000000000000000000000000000002' },
+        { counterparty_address: '0x0000000000000000000000000000000000000003' },
+      ],
+      pagination: { page: body.pagination.page, per_page: 2, has_more: true },
+    }));
+    const api = {
+      request: rawRequest,
+      addressCounterparties({ address, chain, days, pagination, requestOptions }) {
+        return this.request('/api/v1/profiler/address/counterparties', {
+          address, chain, days, pagination,
+        }, requestOptions);
+      },
+    };
+    enableAutoPagination(api, { maxPages: 5 });
+
+    const result = await traceCounterparties(api, {
+      address: '0x0000000000000000000000000000000000000001',
+      chain: 'ethereum',
+      depth: 1,
+      width: 2,
+      delayMs: 0,
+    });
+
+    expect(rawRequest).toHaveBeenCalledTimes(1);
+    expect(rawRequest.mock.calls[0][1].pagination).toEqual({ page: 1, per_page: 2 });
+    expect(rawRequest.mock.calls[0][2]).toEqual({ autoPaginate: false });
+    expect(result.edges).toHaveLength(2);
+  });
+
   it('should return graph structure', async () => {
     const mockApi = {
       addressCounterparties: vi.fn()
@@ -7124,5 +7221,331 @@ describe('perp screener CLI handler - new filters (ECINT-6680)', () => {
     await commands['perp'](['screener'], mockApi, {}, { 'sectors-filter': '' });
     const call = mockApi.perpScreener.mock.calls[0][0];
     expect(call.sectorsFilter).toBeUndefined();
+  });
+});
+
+describe('--paginate / --all flag integration (API-275)', () => {
+  let outputs;
+  let errors;
+  let exitCode;
+  let requestBodies;
+
+  // The mock mirrors NansenAPI: handler methods route through request(), which
+  // is the method --paginate wraps. 23 rows served 10 per page.
+  function MockAPI() {
+    this.servedFromCache = false;
+    this.lastResponseMeta = null;
+    this.paginatedResponseMeta = null;
+    this.request = vi.fn(async (endpoint, body) => {
+      requestBodies.push(body);
+      if (!body.pagination) return { data: [{ kind: 'single-page' }] };
+      const { page, per_page = 10 } = body.pagination;
+      const start = (page - 1) * per_page;
+      return { data: Array.from({ length: Math.max(0, Math.min(per_page, 23 - start)) }, (_, i) => ({ id: start + i })) };
+    });
+    this.smartMoneyNetflow = function ({ chains, pagination }) {
+      return this.request('/api/v1/smart-money/netflow', { chains, filters: {}, order_by: undefined, pagination });
+    };
+    this.tokenOhlcv = function ({ tokenAddress, chain, timeframe }) {
+      return this.request('/api/v1/tgm/token-ohlcv', { token_address: tokenAddress, chain, timeframe });
+    };
+  }
+
+  const deps = () => ({
+    output: (msg) => outputs.push(msg),
+    errorOutput: (msg) => errors.push(msg),
+    exit: (code) => { exitCode = code; },
+    NansenAPIClass: MockAPI,
+  });
+
+  beforeEach(() => { outputs = []; errors = []; exitCode = null; requestBodies = []; });
+
+  it('keeps the default single-page behaviour without the flag', async () => {
+    const d = deps();
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '10'], d);
+    expect(result.type).toBe('success');
+    expect(result.data.data).toHaveLength(10);
+    expect(result.data.pagination).toBeUndefined();
+  });
+
+  it('merges every page and reports traversal metadata', async () => {
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '10', '--paginate'], deps());
+    expect(result.type).toBe('success');
+    const out = JSON.parse(outputs[0]);
+    expect(out.success).toBe(true);
+    expect(out.data.data.map(r => r.id)).toEqual(Array.from({ length: 23 }, (_, i) => i));
+    expect(out.data.pagination).toEqual({ page: 1, pages_fetched: 3, next_page: null, complete: true });
+  });
+
+  it('accepts --all as an alias and starts from --page', async () => {
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '10', '--page', '2', '--all'], deps());
+    expect(result.data.data.map(r => r.id)).toEqual(Array.from({ length: 13 }, (_, i) => 10 + i));
+    expect(result.data.pagination.page).toBe(2);
+  });
+
+  it('bounds traversal with --max-pages and marks the result incomplete', async () => {
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '5', '--paginate', '--max-pages', '2'], deps());
+    expect(result.data.data).toHaveLength(10);
+    expect(result.data.pagination).toEqual({ page: 1, pages_fetched: 2, next_page: 3, complete: false });
+  });
+
+  it('does not paginate an endpoint whose request omits pagination', async () => {
+    const result = await runCLI(['token', 'ohlcv', '--token', 'abc', '--paginate'], deps());
+    expect(result.data).toEqual({ data: [{ kind: 'single-page' }] });
+  });
+
+  it('streams all merged rows as NDJSON with --stream', async () => {
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '10', '--paginate', '--stream'], deps());
+    expect(result.type).toBe('stream');
+    const lines = outputs[0].split('\n');
+    expect(lines).toHaveLength(23);
+    expect(JSON.parse(lines[22]).id).toBe(22);
+  });
+
+  it('formats nested data.data rows individually for stream, table, and CSV', () => {
+    const nested = {
+      data: { data: [{ id: 1, name: 'one' }, { id: 2, name: 'two' }] },
+      pagination: { complete: true },
+    };
+
+    expect(formatStream(nested).split('\n').map(JSON.parse)).toEqual(nested.data.data);
+    expect(formatTable(nested)).toContain('one  │ 1');
+    expect(formatTable(nested)).toContain('two  │ 2');
+    expect(formatCsv(nested)).toBe('id,name\n1,one\n2,two');
+  });
+
+  it('formats a descriptive single-array-key envelope as individual rows without --paginate', () => {
+    const descriptive = {
+      trades: [{ id: 1 }, { id: 2 }],
+      pagination: {},
+    };
+
+    expect(formatStream(descriptive).split('\n').map(JSON.parse)).toEqual(descriptive.trades);
+    expect(formatStream(descriptive)).not.toContain('trades');
+    const table = formatTable(descriptive);
+    expect(table.split('\n').slice(2).map(line => line.trim())).toEqual(['1', '2']);
+    expect(table).not.toContain('trades');
+    expect(formatCsv(descriptive)).toBe('id\n1\n2');
+  });
+
+  it.each(['0', '-1', '1.5', '9007199254740992', 'Infinity', 'false', '', '   '])(
+    'rejects invalid --max-pages value %# with the machine-readable error envelope',
+    async (value) => {
+      const d = deps();
+      const result = await runCLI(['smart-money', 'netflow', '--paginate', '--max-pages', value], d);
+      expect(result.type).toBe('error');
+      expect(exitCode).toBe(1);
+      const out = JSON.parse(outputs[0]);
+      expect(out).toMatchObject({ success: false, code: 'INVALID_PARAMS' });
+      expect(out.error).toMatch(/--max-pages (requires|must be) a positive safe integer/);
+    },
+  );
+
+  it('rejects valueless and repeated --max-pages options', async () => {
+    let result = await runCLI(['smart-money', 'netflow', '--paginate', '--max-pages'], deps());
+    expect(result.type).toBe('error');
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(outputs[0]).error).toBe('--max-pages requires a positive safe integer value');
+
+    outputs = [];
+    exitCode = null;
+    result = await runCLI([
+      'smart-money', 'netflow', '--paginate', '--max-pages', '2', '--max-pages', '3',
+    ], deps());
+    expect(result.type).toBe('error');
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(outputs[0]).error).toBe('--max-pages may only be specified once');
+  });
+
+  it.each([
+    ['zero', ['--max-pages', '0']],
+    ['non-numeric', ['--max-pages', 'not-a-number']],
+    ['over-ceiling', ['--max-pages', '1001']],
+    ['valueless', ['--max-pages']],
+    ['repeated', ['--max-pages', '2', '--max-pages', '3']],
+  ])(
+    'ignores an invalid %s --max-pages when pagination is disabled without leaking it upstream',
+    async (_case, maxPageArgs) => {
+      const result = await runCLI(
+        ['smart-money', 'netflow', '--limit', '10', ...maxPageArgs], deps(),
+      );
+      expect(result.type).toBe('success');
+      expect(result.data.data).toHaveLength(10);
+      expect(requestBodies).toHaveLength(1);
+      expect(requestBodies[0]).not.toHaveProperty('max-pages');
+      expect(requestBodies[0]).not.toHaveProperty('max_pages');
+      expect(requestBodies[0].pagination).toEqual({ page: 1, per_page: 10 });
+    },
+  );
+
+  it('caps --max-pages to bound traversal memory and billed requests', async () => {
+    const result = await runCLI(['smart-money', 'netflow', '--paginate', '--max-pages', '1001'], deps());
+    expect(result.type).toBe('error');
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(outputs[0]).error).toBe('--max-pages must be at most 1000; received: 1001');
+  });
+
+  it('accepts --max-pages at the configured ceiling', async () => {
+    const result = await runCLI([
+      'smart-money', 'netflow', '--paginate', '--max-pages', String(MAX_PAGES_LIMIT),
+    ], deps());
+    expect(result.type).toBe('success');
+    expect(result.data.data).toHaveLength(23);
+  });
+
+  it('reports aggregate credits and a low-credit warning for the whole traversal', async () => {
+    function MetadataAPI() {
+      this.servedFromCache = false;
+      this.request = vi.fn(async (_endpoint, body) => {
+        const { page } = body.pagination;
+        this.lastResponseMeta = {
+          credits: { used: 4, remaining: page === 1 ? 8 : 3, cost: 4 },
+        };
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        return { data: page === 1 ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }] };
+      });
+      this.smartMoneyNetflow = ({ pagination }) => this.request('/api/v1/smart-money/netflow', { pagination });
+    }
+    const d = { ...deps(), NansenAPIClass: MetadataAPI };
+
+    await runCLI(['smart-money', 'netflow', '--limit', '2', '--paginate'], d);
+
+    expect(errors).toEqual([
+      '⚠️  3 API credits left — less than the aggregate cost of 2 live page requests (8). Top up at https://app.nansen.ai/api?tab=api',
+      'Credits: 8 (2 page requests)',
+    ]);
+    expect(JSON.parse(outputs[0]).data.data).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  it('reports charges from completed pages when a later page fails', async () => {
+    function FailingMetadataAPI() {
+      this.servedFromCache = false;
+      this.lastResponseMeta = null;
+      this.request = vi.fn(async (_endpoint, body) => {
+        const { page } = body.pagination;
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        if (page === 1) {
+          this.lastResponseMeta = { credits: { used: 2, remaining: 20, cost: 2 } };
+          return { data: [{ id: 1 }, { id: 2 }] };
+        }
+        throw new NansenError('Page two failed', ErrorCode.RATE_LIMITED, 429, {
+          credits: { used: 4, remaining: 16, cost: 4 },
+          requestId: 'failed-page-2',
+        });
+      });
+      this.smartMoneyNetflow = ({ pagination }) => this.request(
+        '/api/v1/smart-money/netflow', { pagination },
+      );
+    }
+
+    const result = await runCLI(['smart-money', 'netflow', '--limit', '2', '--paginate'], {
+      ...deps(),
+      NansenAPIClass: FailingMetadataAPI,
+    });
+
+    expect(result.type).toBe('error');
+    expect(JSON.parse(outputs[0])).toMatchObject({
+      success: false,
+      error: 'Page two failed',
+      code: 'RATE_LIMITED',
+    });
+    expect(errors).toEqual(['Credits: 6 (2 page requests)']);
+  });
+
+  it('labels a one-page live traversal as a page request', async () => {
+    function MetadataAPI() {
+      this.servedFromCache = false;
+      this.request = vi.fn(async () => {
+        this.lastResponseMeta = { credits: { used: 2, remaining: 20, cost: 2 } };
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        return { pagination: { page: 1, total_pages: 1 }, data: [{ id: 1 }] };
+      });
+      this.smartMoneyNetflow = ({ pagination }) => this.request('/api/v1/smart-money/netflow', { pagination });
+    }
+
+    await runCLI(['smart-money', 'netflow', '--limit', '10', '--paginate'], {
+      ...deps(),
+      NansenAPIClass: MetadataAPI,
+    });
+
+    expect(errors).toContain('Credits: 2 (1 page request)');
+  });
+
+  it('labels multiple live requests within a partly cached traversal', async () => {
+    function MetadataAPI() {
+      this.servedFromCache = false;
+      this.lastResponseMeta = null;
+      this.paginatedResponseMeta = null;
+      this.request = vi.fn(async (_endpoint, body) => {
+        const { page } = body.pagination;
+        this.servedFromCache = page === 2;
+        if (!this.servedFromCache) {
+          this.lastResponseMeta = { credits: { used: 2, remaining: 50, cost: 2 } };
+        }
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        return {
+          data: [{ id: page }],
+          pagination: { page, per_page: 1, total_pages: 4 },
+        };
+      });
+      this.smartMoneyNetflow = ({ pagination }) => this.request(
+        '/api/v1/smart-money/netflow', { pagination },
+      );
+    }
+
+    await runCLI(['smart-money', 'netflow', '--limit', '1', '--paginate'], {
+      ...deps(),
+      NansenAPIClass: MetadataAPI,
+    });
+
+    expect(errors).toContain('Credits: 6 (3 live of 4 page requests)');
+    expect(errors).not.toContain('Credits: 6 (3 page requests)');
+  });
+
+  it('preserves transfer traversal metadata across paginated enrichment lookups', async () => {
+    let instance;
+    function EnrichedTransfersAPI() {
+      instance = this;
+      this.servedFromCache = false;
+      this.lastResponseMeta = null;
+      this.paginatedResponseMeta = null;
+      this.request = vi.fn(async (endpoint, body) => {
+        const { page, per_page: perPage } = body.pagination;
+        this.servedFromCache = false;
+        this.lastEndpoint = endpoint;
+        if (endpoint === '/api/v1/tgm/transfers') {
+          this.lastResponseMeta = { credits: { used: 5, remaining: page === 1 ? 15 : 10, cost: 5 } };
+          const transfers = page === 1
+            ? [{ id: 1, from: '0xaaa', to: '0xbbb' }, { id: 2, from: '0xaaa', to: '0xbbb' }]
+            : [{ id: 3, from: '0xaaa', to: '0xbbb' }];
+          return { transfers };
+        }
+        this.lastResponseMeta = { credits: { used: 1, remaining: 9, cost: 1 } };
+        return {
+          data: [{ label: 'Smart Trader' }],
+          pagination: { page, per_page: perPage, total_pages: 1 },
+        };
+      });
+      this.tokenTransfers = ({ pagination }) => this.request('/api/v1/tgm/transfers', { pagination });
+      this.addressLabels = ({ address, chain }) => this.request('/api/v1/profiler/address/labels', {
+        address, chain, pagination: { page: 1, per_page: 100 },
+      });
+    }
+
+    const result = await runCLI([
+      'token', 'transfers', '--token', '0xabc', '--limit', '2', '--paginate', '--enrich',
+    ], { ...deps(), NansenAPIClass: EnrichedTransfersAPI });
+
+    expect(result.type).toBe('success');
+    expect(result.data.transfers).toHaveLength(3);
+    expect(result.data.transfers[0].from_labels).toEqual(['Smart Trader']);
+    expect(instance.paginatedResponseMeta).toEqual({
+      credits: { used: 10, remaining: 10, cost: 10 },
+      pagination: { pagesFetched: 2, livePages: 2, cachedPages: 0 },
+    });
+    expect(instance.lastEndpoint).toBe('/api/v1/profiler/address/labels');
+    expect(instance.paginatedEndpoint).toBe('/api/v1/tgm/transfers');
+    expect(errors).toContain('Credits: 10 (2 page requests)');
+    expect(errors).not.toContain('Credits: 1 (1 page request)');
   });
 });
