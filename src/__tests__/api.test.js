@@ -4215,6 +4215,46 @@ describe('NansenAPI', () => {
       expect(result).toHaveProperty('name', 'Updated Alert');
     });
 
+    it('alertsUpdate should not retry after an ambiguous network failure', async () => {
+      if (LIVE_TEST) return;
+      vi.useFakeTimers();
+      let patches = 0;
+      mockFetch.mockImplementation(async () => {
+        patches += 1;
+        throw new Error('response lost after update');
+      });
+
+      let thrownError;
+      const promise = api.alertsUpdate({ id: 'alert-1', channels: [{ type: 'telegram', id: '123' }] })
+        .catch(error => { thrownError = error; });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(thrownError?.message).toContain('response lost after update');
+      expect(patches).toBe(1);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('alertsUpdate should not retry a retryable HTTP status', async () => {
+      if (LIVE_TEST) return;
+      vi.useFakeTimers();
+      mockFetch.mockImplementation(async () => ({
+        ok: false,
+        status: 503,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ error: 'upstream unavailable' }),
+        text: async () => JSON.stringify({ error: 'upstream unavailable' }),
+      }));
+
+      let thrownError;
+      const promise = api.alertsUpdate({ id: 'alert-1', name: 'Renamed' }).catch(error => { thrownError = error; });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(thrownError).toBeDefined();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('alertsToggle should PATCH /api/v1/smart-alert/toggle', async () => {
       setupMock(MOCK_RESPONSES.alertsToggle);
       const result = await api.alertsToggle({ id: 'alert-1', isEnabled: false });

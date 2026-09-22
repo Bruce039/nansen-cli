@@ -2127,7 +2127,10 @@ export class NansenAPI {
   }
 
   async alertsUpdate(params = {}) {
-    return this.request('/api/v1/smart-alert', params, { method: 'PATCH', cache: false });
+    // Same hazard as alertsCreate: an update that sets channels makes the
+    // server re-send the channel welcome message, so a lost response after a
+    // committed update must not resend the PATCH through the retry loop.
+    return this.request('/api/v1/smart-alert', params, { method: 'PATCH', cache: false, retry: false });
   }
 
   async alertsToggle(params = {}) {
