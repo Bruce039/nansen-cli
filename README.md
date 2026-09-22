@@ -322,6 +322,7 @@ after upgrading the CLI to pick up new commands.
 | `--pretty` | Human-readable JSON |
 | `--table` | Table format |
 | `--stream` | NDJSON output for large results |
+| `--paginate` | Fetch every page of a list command (alias `--all`); bound with `--max-pages <n>` (default 10; ignored without pagination) |
 | `--labels <label>` | Smart Money label filter |
 | `--smart-money` | Filter for Smart Money addresses only |
 | `--debug` | Trace every HTTP request on stderr (see [Debugging](#debugging)) |
@@ -364,9 +365,29 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 **Use `--stream` for large results** — outputs NDJSON instead of buffering a giant array.
 
+**Use `--paginate` to fetch every page** of a list command in one call instead of looping over `--page`:
+```bash
+nansen smart-money netflow --chain solana --limit 100 --paginate --max-pages 5
+```
+`--limit` is the page size and `--max-pages` (default 10; ignored without pagination) caps the number of requests — every page is a
+separate, separately billed API call. Server completion metadata (`total_pages`, `total`, or
+`is_last_page`) is honoured so a known final page is not fetched again. Rows are de-duplicated and
+the response gains
+`pagination: { page, pages_fetched, next_page, complete }`; when `complete` is `false`, resume with
+`--page <next_page>`. The stderr credit summary totals the live page requests; cached pages are not
+counted as charges. Traversal trusts the server's `total`; if a live dataset changes or reports
+inconsistent totals while pages are being fetched, later rows can be omitted. Combine with
+`--stream` for NDJSON.
+
 **ENS names** work anywhere `--address` is accepted: `--address vitalik.eth`
 
 ## Output Format
+
+> **Compatibility note:** `--table`, `--format csv`, and `--stream` now render an
+> unambiguous descriptive top-level array (for example, `trades` or `holdings`)
+> as one row per item, even without `--paginate`. Older versions rendered the
+> enclosing response object as a single row. Envelopes with multiple candidate
+> data arrays remain unexpanded.
 
 ```json
 { "success": true,  "data": <api_response> }

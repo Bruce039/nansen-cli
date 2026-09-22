@@ -15,6 +15,7 @@ import { buildMcpCommands } from './commands/mcp.js';
 import { buildCompletionCommands } from './commands/completion.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from './commands/research.js';
 import { buildPagination, parseSort, parseCsvOption, rejectBlankOption, parseObjectOption } from './query-options.js';
+import { enableAutoPagination, DEFAULT_MAX_PAGES, MAX_PAGES_LIMIT, locateRows } from './auto-paginate.js';
 export { buildPagination, parseSort };
 import { resolveAddress, isEnsName } from './ens.js';
 import { compareSemver } from './semver.js';
@@ -193,7 +194,7 @@ export const VALUELESS_FLAGS = new Set([
   'enrich', 'full', 'human', 'enabled', 'disabled', 'expert', 'json', 'offline',
   'no-simulate', 'no-verify-outcome', 'no-revoke-excessive-allowance', 'dry-run',
   'send-api-key', 'all', 'max', 'gasless', 'auto-slippage', 'unsafe-no-password',
-  'reveal', 'yes', 'debug',
+  'reveal', 'yes', 'paginate', 'debug',
 ]);
 
 export function parseArgs(args) {
@@ -371,9 +372,43 @@ function parseNonNegativeSafeIntegerOption(name, options, flags, defaultValue) {
     'non-negative safe integer',
   );
 
+  // Callers without an option or default intentionally receive undefined.
+  // Do not rely on JavaScript's `undefined < 0` coercion for that contract.
+  if (value === undefined) return undefined;
+
   if (value < 0) {
     throw new NansenError(
       `--${name} must be a non-negative safe integer; received: ${value}`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
+
+  return value;
+}
+
+function parsePositiveSafeIntegerOption(name, options, flags, defaultValue, { max } = {}) {
+  const value = parseSafeIntegerOption(
+    name,
+    options,
+    flags,
+    defaultValue,
+    'positive safe integer',
+  );
+
+  // Keep the helper safe for future optional callers; the current pagination
+  // caller supplies DEFAULT_MAX_PAGES whenever this parser is activated.
+  if (value === undefined) return undefined;
+
+  if (value < 1) {
+    throw new NansenError(
+      `--${name} must be a positive safe integer; received: ${value}`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
+
+  if (max !== undefined && value > max) {
+    throw new NansenError(
+      `--${name} must be at most ${max}; received: ${value}`,
       ErrorCode.INVALID_PARAMS,
     );
   }
@@ -416,16 +451,9 @@ export function formatValue(val) {
 // Table formatter for human-readable output
 export function formatTable(data) {
   // Extract array of records from various response shapes
-  let records = [];
-  if (Array.isArray(data)) {
-    records = data;
-  } else if (data?.data && Array.isArray(data.data)) {
-    records = data.data;
-  } else if (data?.results && Array.isArray(data.results)) {
-    records = data.results;
-  } else if (data?.data?.results && Array.isArray(data.data.results)) {
-    records = data.data.results;
-  } else if (typeof data === 'object' && data !== null) {
+  const located = locateRows(data, { descriptive: true });
+  let records = located?.rows || [];
+  if (!located && typeof data === 'object' && data !== null) {
     // Single object - convert to array
     records = [data];
   }
@@ -488,16 +516,9 @@ export function formatTable(data) {
  */
 export function formatCsv(data) {
   // Extract array of records from various response shapes
-  let records = [];
-  if (Array.isArray(data)) {
-    records = data;
-  } else if (data?.data && Array.isArray(data.data)) {
-    records = data.data;
-  } else if (data?.results && Array.isArray(data.results)) {
-    records = data.results;
-  } else if (data?.data?.results && Array.isArray(data.data.results)) {
-    records = data.data.results;
-  } else if (typeof data === 'object' && data !== null) {
+  const located = locateRows(data, { descriptive: true });
+  let records = located?.rows || [];
+  if (!located && typeof data === 'object' && data !== null) {
     records = [data];
   }
 
@@ -593,17 +614,11 @@ export function formatError(error) {
  * Each record is output as a separate JSON line
  */
 export function formatStream(data) {
+  if (data?.success === false) return JSON.stringify(data);
   // Extract array of records from various response shapes
-  let records = [];
-  if (Array.isArray(data)) {
-    records = data;
-  } else if (data?.data && Array.isArray(data.data)) {
-    records = data.data;
-  } else if (data?.results && Array.isArray(data.results)) {
-    records = data.results;
-  } else if (data?.data?.results && Array.isArray(data.data.results)) {
-    records = data.data.results;
-  } else if (typeof data === 'object' && data !== null) {
+  const located = locateRows(data, { descriptive: true });
+  let records = located?.rows || [];
+  if (!located && typeof data === 'object' && data !== null) {
     // Single object - output as single line
     records = [data];
   }
@@ -687,7 +702,11 @@ async function enrichTransfers(result, apiInstance, chain) {
   const labelMap = {};
   for (const addr of addrs) {
     try {
-      const labelsResult = await apiInstance.addressLabels({ address: addr, chain });
+      const labelsResult = await apiInstance.addressLabels({
+        address: addr,
+        chain,
+        requestOptions: { autoPaginate: false },
+      });
       labelMap[addr] = Array.isArray(labelsResult?.data)
         ? labelsResult.data.map(item => item.label)
         : labelsResult?.labels || [];
@@ -798,7 +817,11 @@ export async function batchProfile(api, params = {}) {
     }
     try {
       if (include.includes('labels')) {
-        const labelsResult = await api.addressLabels({ address, chain });
+        const labelsResult = await api.addressLabels({
+          address,
+          chain,
+          requestOptions: { autoPaginate: false },
+        });
         entry.labels = Array.isArray(labelsResult?.data)
           ? labelsResult.data
           : labelsResult?.labels || [];
@@ -807,7 +830,11 @@ export async function batchProfile(api, params = {}) {
         entry.balance = await api.addressBalance({ address, chain });
       }
       if (include.includes('pnl')) {
-        entry.pnl = await api.addressPnl({ address, chain });
+        entry.pnl = await api.addressPnl({
+          address,
+          chain,
+          requestOptions: { autoPaginate: false },
+        });
       }
     } catch (err) {
       entry.error = err.message;
@@ -865,6 +892,7 @@ export async function traceCounterparties(api, params = {}) {
       const result = await api.addressCounterparties({
         address: addr, chain, days,
         pagination: { page: 1, per_page: width },
+        requestOptions: { autoPaginate: false },
       });
 
       const counterparties = result?.data?.results || result?.counterparties || result?.data || [];
@@ -919,8 +947,12 @@ export async function compareWallets(api, params = {}) {
   // error cannot masquerade as "no overlap" / "0 USD".
   const settle = (promise) => promise.then(value => ({ value }), error => ({ error }));
   const [cp1, cp2] = await Promise.all([
-    settle(api.addressCounterparties({ address: addr1, chain, days })),
-    settle(api.addressCounterparties({ address: addr2, chain, days })),
+    settle(api.addressCounterparties({
+      address: addr1, chain, days, requestOptions: { autoPaginate: false },
+    })),
+    settle(api.addressCounterparties({
+      address: addr2, chain, days, requestOptions: { autoPaginate: false },
+    })),
   ]);
   await sleep(delayMs);
   const [bal1, bal2] = await Promise.all([
@@ -1039,7 +1071,8 @@ COMMANDS:
   cache       clear
   changelog   --since <version> to filter
 
-OPTIONS: --chain --limit --sort field:dir --fields a,b --days N --filters '{}'
+OPTIONS: --chain --limit --page N --sort field:dir --fields a,b --days N --filters '{}'
+PAGING:  --paginate (alias --all) fetch every page, --max-pages N (default 10), --limit sets page size
 FORMAT:  --pretty --table --format csv --stream (NDJSON)
 RETRY:   --no-retry --retries N --cache --cache-ttl N
 DEBUG:   --debug (or NANSEN_DEBUG=1) traces each request on stderr: method, URL,
@@ -1771,18 +1804,35 @@ export function buildCommands(deps = {}) {
           // candidate fetch has to cover every page up to the requested one.
           const requestedLimit = pagination?.per_page || 100;
           const requestedPage = pagination?.page || 1;
+          const paginateAll = flags.paginate || flags.all;
           const searchPagination = search
-            ? { page: 1, per_page: Math.max(500, requestedPage * requestedLimit) }
+            ? {
+                page: paginateAll ? requestedPage : 1,
+                // A normal client-side search widens its one candidate fetch.
+                // With --paginate, keep --limit as the server page size: the
+                // traversal already fetches up to --max-pages separately
+                // billed pages, so silently multiplying each one to 500 would
+                // make the flag much more expensive than documented.
+                per_page: paginateAll
+                  ? requestedLimit
+                  : Math.max(500, requestedPage * requestedLimit),
+              }
             : pagination;
           const result = await apiInstance.tokenScreener({ chains, timeframe, filters, orderBy, pagination: searchPagination });
           if (search) {
             const q = search.toLowerCase();
             const offset = (requestedPage - 1) * requestedLimit;
-            const filterArr = (arr) => arr.filter(t => 
+            // Filtering only replaces the row array. With --paginate, the
+            // preserved pagination metadata describes candidate traversal,
+            // not the number of client-side matches.
+            const filterArr = (arr) => {
+              const matching = arr.filter(t =>
               (t.token_symbol && t.token_symbol.toLowerCase().includes(q)) ||
               (t.token_name && t.token_name.toLowerCase().includes(q)) ||
               (t.token_address && t.token_address.toLowerCase() === q)
-            ).slice(offset, offset + requestedLimit);
+              );
+              return paginateAll ? matching : matching.slice(offset, offset + requestedLimit);
+            };
             // Handle nested response shapes: {data: [...]} or {data: {data: [...]}}
             if (Array.isArray(result?.data)) {
               return { ...result, data: filterArr(result.data) };
@@ -1871,7 +1921,17 @@ export function buildCommands(deps = {}) {
 
       // Enrich transfers with Nansen labels for from/to addresses
       if (subcommand === 'transfers' && (options.enrich || flags.enrich)) {
-        result = await enrichTransfers(result, apiInstance, chain);
+        // Label lookups are auxiliary requests and may themselves carry a
+        // pagination body. Preserve the primary transfer traversal metadata
+        // that runCLI reports after the command completes.
+        const transferPaginationMeta = apiInstance.paginatedResponseMeta;
+        const transferPaginationEndpoint = apiInstance.paginatedEndpoint;
+        try {
+          result = await enrichTransfers(result, apiInstance, chain);
+        } finally {
+          apiInstance.paginatedResponseMeta = transferPaginationMeta;
+          apiInstance.paginatedEndpoint = transferPaginationEndpoint;
+        }
       }
 
       return result;
@@ -2244,6 +2304,31 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
   return lines.join('\n');
 }
 
+function emitResponseMetadata(api, errorOutput) {
+  if (!api) return;
+  const responseMeta = api.paginatedResponseMeta || api.lastResponseMeta;
+  const lowCredits = creditWarning(responseMeta);
+  if (lowCredits) errorOutput(lowCredits);
+  for (const notice of noticeWarnings(responseMeta)) errorOutput(notice);
+
+  // An aggregate belongs to the primary paginated endpoint even if a composite
+  // handler made auxiliary requests afterward and changed lastEndpoint.
+  const endpoint = api.paginatedResponseMeta ? api.paginatedEndpoint : api.lastEndpoint;
+  const charged = creditsCharged(responseMeta, endpoint);
+  if (charged?.source === 'header') {
+    const paginationMeta = responseMeta?.pagination;
+    let scope = 'this call';
+    if (paginationMeta?.cachedPages > 0 && paginationMeta.livePages > 0) {
+      scope = `${paginationMeta.livePages} live of ${paginationMeta.pagesFetched} page requests`;
+    } else if (paginationMeta?.livePages > 1) scope = `${paginationMeta.livePages} page requests`;
+    else if (paginationMeta?.livePages === 1) scope = '1 page request';
+    else if (paginationMeta?.livePages === 0) scope = 'cached traversal';
+    errorOutput(`Credits: ${charged.cost} (${scope})`);
+  } else if (charged?.source === 'estimate') {
+    errorOutput(`Credits: ~${charged.estimate.free} free / ${charged.estimate.pro} pro (estimated)`);
+  }
+}
+
 // Run CLI with given args (returns result, allows custom output/exit handlers)
 export async function runCLI(rawArgs, deps = {}) {
   const {
@@ -2282,6 +2367,13 @@ export async function runCLI(rawArgs, deps = {}) {
   };
 
   let parsed;
+  let api;
+  let responseMetadataEmitted = false;
+  const emitResponseMetadataOnce = () => {
+    if (responseMetadataEmitted) return;
+    responseMetadataEmitted = true;
+    emitResponseMetadata(api, errorOutput);
+  };
   try {
     parsed = parseArgs(rawArgs);
   } catch (error) {
@@ -2506,7 +2598,16 @@ export async function runCLI(rawArgs, deps = {}) {
     if (options['x402-payment-signature']) {
       defaultHeaders['Payment-Signature'] = options['x402-payment-signature'];
     }
-    const api = new NansenAPIClass(undefined, undefined, { retry: retryOptions, cache: cacheOptions, defaultHeaders });
+    api = new NansenAPIClass(undefined, undefined, { retry: retryOptions, cache: cacheOptions, defaultHeaders });
+
+    // --all aliases --paginate; wrapping api.request gives every list handler
+    // the same max-pages bound while leaving non-list requests untouched.
+    if (flags.paginate || flags.all) {
+      const maxPages = parsePositiveSafeIntegerOption(
+        'max-pages', options, flags, DEFAULT_MAX_PAGES, { max: MAX_PAGES_LIMIT },
+      );
+      enableAutoPagination(api, { maxPages });
+    }
 
     // Deprecated top-level aliases otherwise run silently (the notice was only
     // shown in --help). Warn on stderr so it doesn't pollute parsed stdout.
@@ -2535,18 +2636,7 @@ export async function runCLI(rawArgs, deps = {}) {
     // stderr so it never contaminates the JSON on stdout that agents parse.
     // Placed before every return path below so it fires for operational
     // commands too, which print their own output and return undefined.
-    const lowCredits = creditWarning(api.lastResponseMeta);
-    if (lowCredits) errorOutput(lowCredits);
-    for (const notice of noticeWarnings(api.lastResponseMeta)) errorOutput(notice);
-
-    // What this call cost — authoritative header when the API sent one, else
-    // the cached spec estimate. stderr only, so stdout JSON stays pure.
-    const charged = creditsCharged(api.lastResponseMeta, api.lastEndpoint);
-    if (charged?.source === 'header') {
-      errorOutput(`Credits: ${charged.cost} (this call)`);
-    } else if (charged?.source === 'estimate') {
-      errorOutput(`Credits: ~${charged.estimate.free} free / ${charged.estimate.pro} pro (estimated)`);
-    }
+    emitResponseMetadataOnce();
 
     // Commands that handle their own output return undefined
     if (result === undefined) {
@@ -2592,6 +2682,9 @@ export async function runCLI(rawArgs, deps = {}) {
     await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
+    // A failed later page can still have incurred charges on earlier pages.
+    // Emit the aggregate on stderr before serializing the unchanged error.
+    emitResponseMetadataOnce();
     // Unified error envelope across all command families (perp/bridge/trade):
     // every failure serializes through formatError as
     // {success:false, error, code, status, details}. A CommandError's structured
