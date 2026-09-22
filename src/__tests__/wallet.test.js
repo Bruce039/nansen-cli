@@ -396,6 +396,17 @@ describe('wallet file durability', () => {
     expect(readWalletJson(path.join(walletsDir(), 'alice.json')).name).toBe('alice');
   });
 
+  it('refuses to read or write a path outside the wallets directory', () => {
+    createWallet('alice', PASSWORD);
+    const outside = path.join(tempDir, 'elsewhere.json');
+    expect(() => writeWalletJsonAtomic(outside, { v: 1 })).toThrow(/not inside the wallets directory/);
+    expect(fs.existsSync(outside)).toBe(false);
+    const traversal = path.join(walletsDir(), '..', 'elsewhere.json');
+    expect(() => readWalletJson(traversal)).toThrow(/not inside the wallets directory/);
+    // A real wallet file still reads.
+    expect(readWalletJson(path.join(walletsDir(), 'alice.json')).name).toBe('alice');
+  });
+
   it('tolerates a directory created concurrently by another process', () => {
     const dir = path.join(tempDir, 'race', 'wallets');
     const realMkdir = fs.mkdirSync;
@@ -413,7 +424,8 @@ describe('wallet file durability', () => {
   });
 
   it('keeps the previous file intact when the atomic write fails', () => {
-    const target = path.join(tempDir, 'value.json');
+    createWallet('alice', PASSWORD); // ensures the wallets dir exists
+    const target = path.join(walletsDir(), 'value.json');
     writeWalletJsonAtomic(target, { v: 1 });
     // A directory at the temp path makes openSync fail before any bytes land.
     fs.mkdirSync(`${target}.${process.pid}.tmp`);

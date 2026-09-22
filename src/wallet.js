@@ -244,7 +244,21 @@ function ensureWalletsDir() {
  * writeAtomic helpers in cost-cache.js / update-check.js, which the key files
  * — the highest-value files this CLI owns — never got.
  */
+// Every wallet-subsystem path is built from getWalletsDir() plus a name that
+// validateWalletName() already confined to [a-zA-Z0-9_-]; this re-checks the
+// resolved path so the helpers below can never be pointed outside that
+// directory by a future caller.
+function assertWalletsDirPath(filePath) {
+  const dir = path.resolve(getWalletsDir());
+  const resolved = path.resolve(filePath);
+  if (path.dirname(resolved) !== dir) {
+    throw new Error(`Refusing to access ${filePath}: not inside the wallets directory`);
+  }
+  return resolved;
+}
+
 export function writeWalletJsonAtomic(filePath, value) {
+  filePath = assertWalletsDirPath(filePath);
   const tmp = `${filePath}.${process.pid}.tmp`;
   let fd;
   try {
@@ -269,7 +283,7 @@ export function writeWalletJsonAtomic(filePath, value) {
  * of surfacing as a bare SyntaxError from deep inside a wallet command.
  */
 export function readWalletJson(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
+  const raw = fs.readFileSync(assertWalletsDirPath(filePath), 'utf8');
   try {
     return JSON.parse(raw);
   } catch (err) {
