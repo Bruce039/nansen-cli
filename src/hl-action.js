@@ -287,7 +287,11 @@ function orderWiresToOrderAction(orderWires, builder, grouping = 'na') {
 //
 // Throws a coded CommandError like every other guard in this file and in
 // perp.js, so an agent can branch on `code` instead of matching the message.
-function validateTpsl({ isBuy, price, takeProfit, stopLoss }) {
+//
+// Exported so perp.js can run it before resolving a signing context or
+// submitting the builder-fee approval. buildOrderAction still calls it, so the
+// guard stays attached to the build for any other caller.
+export function validateTpsl({ isBuy, price, takeProfit, stopLoss }) {
   if (isBuy) {
     if (stopLoss != null && stopLoss >= price) {
       throw new CommandError(`Stop-loss for a long must be below the entry price (${price}). Got: ${stopLoss}`, 'INVALID_INPUT');

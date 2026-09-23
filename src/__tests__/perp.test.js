@@ -599,6 +599,41 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     expect(submitExchange.mock.calls[1][0].action.type).toBe('order');
   });
 
+  // The TP/SL side check used to run only inside buildOrderAction, which the
+  // order flow reaches after ensureBuilderApproved has signed and submitted the
+  // one-time approval. A wrong-side stop/take must not cost an on-chain action
+  // or a password prompt, so assert against an unapproved builder: the setup
+  // that would otherwise submit approveBuilderFee first.
+  describe('wrong-side take-profit/stop-loss is rejected before anything is signed', () => {
+    const unapproved = () => mockApi({
+      builder: { approved: false, max_fee_rate: 0, required_fee: 80, builder_address: BUILDER },
+      screen: clean,
+    });
+
+    it.each([
+      ['buy', 'stop-loss', '2000', /Stop-loss for a long must be below/],
+      ['buy', 'take-profit', '1900', /Take-profit for a long must be above/],
+      ['sell', 'stop-loss', '2000', /Stop-loss for a short must be above/],
+      ['sell', 'take-profit', '2100', /Take-profit for a short must be below/],
+    ])('rejects %s with --%s %s', async (side, flag, value, message) => {
+      exportWallet.mockClear();
+      const api = unapproved();
+      const err = await cmds.order([], api, {}, { ...baseOrder, side, [flag]: value }).catch(e => e);
+      expect(err.code).toBe('INVALID_INPUT');
+      expect(err.message).toMatch(message);
+      expect(submitExchange).not.toHaveBeenCalled();
+      // No signing context resolved, so the user is never prompted for a password.
+      expect(exportWallet).not.toHaveBeenCalled();
+      expect(api.request.mock.calls.some(([endpoint]) => endpoint.startsWith('/api/v1/sanctions/screen'))).toBe(false);
+    });
+
+    it('still fires the builder-fee approval when the protective legs are valid', async () => {
+      const api = unapproved();
+      await cmds.order([], api, {}, { ...baseOrder, 'stop-loss': '1900', 'take-profit': '2100' });
+      expect(submitExchange.mock.calls.map(([c]) => c.action.type)).toEqual(['approveBuilderFee', 'order']);
+    });
+  });
+
   it('screens and submits a transfer (user-signed usdClassTransfer)', async () => {
     const api = mockApi({ screen: clean });
     await cmds.transfer([], api, {}, { direction: 'spot-to-perp', amount: '25', wallet: 'x' });
