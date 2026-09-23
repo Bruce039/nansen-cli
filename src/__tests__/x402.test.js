@@ -251,11 +251,18 @@ describe('createPaymentSignatures — policy guard integration', () => {
     vi.doUnmock('../x402-svm.js');
   });
 
-  it('12b. an option that fails to build is skipped with its reason on stderr', async () => {
-    const req = makeRequirement(10_000n);
+  // The caller signs options in ranked order and stops at the first one the
+  // server accepts, so ranking by the server's array order let a merchant be
+  // paid an expensive option while a cheaper one for the same resource sat in
+  // the same response.
+  it('12a. signs the cheapest viable option first', async () => {
+    const expensive = makeRequirement(900000n); // $0.90
+    const cheap = makeRequirement(10000n);      // $0.01
 
-    const createEvmSpy = vi.fn(() => {
-      throw new Error('feePayer must be a facilitator account distinct from the paying wallet');
+    const signedAmounts = [];
+    const createEvmSpy = vi.fn((req) => {
+      signedAmounts.push(req.amount);
+      return 'sig-' + req.amount;
     });
     vi.doMock('../x402-evm.js', () => ({
       createEvmPaymentPayload: createEvmSpy,
@@ -270,15 +277,52 @@ describe('createPaymentSignatures — policy guard integration', () => {
     }));
 
     const { createPaymentSignatures } = await import('../x402.js');
+    const payload = { accepts: [expensive, cheap] };
+    const header = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+    const response = { headers: { get: (k) => (k === 'payment-required' ? header : null) } };
+
     const results = [];
-    for await (const item of createPaymentSignatures(makeResponse(req), 'https://api.nansen.ai/test')) {
+    for await (const item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) {
       results.push(item);
     }
 
-    expect(results).toHaveLength(0);
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/\[x402\] Skipping eip155:8453 option: feePayer must be a facilitator/),
-    );
+    // Cheapest signed first; the expensive option is kept as a fallback.
+    expect(signedAmounts).toEqual(['10000', '900000']);
+    expect(results).toHaveLength(2);
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
+
+  it('12b. keeps the server order for options that cost the same', async () => {
+    const first = { ...makeRequirement(10000n), extra: { name: 'USD Coin', version: '2', tag: 'first' } };
+    const second = { ...makeRequirement(10000n), extra: { name: 'USD Coin', version: '2', tag: 'second' } };
+
+    const signedTags = [];
+    const createEvmSpy = vi.fn((req) => {
+      signedTags.push(req.extra.tag);
+      return 'sig-' + req.extra.tag;
+    });
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const payload = { accepts: [first, second] };
+    const header = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+    const response = { headers: { get: (k) => (k === 'payment-required' ? header : null) } };
+
+    for await (const _item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) { /* drain */ }
+
+    expect(signedTags).toEqual(['first', 'second']);
 
     vi.doUnmock('../x402-evm.js');
     vi.doUnmock('../x402-svm.js');
