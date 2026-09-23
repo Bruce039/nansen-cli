@@ -652,7 +652,9 @@ export async function deleteWallet(name, password) {
 
   fs.unlinkSync(walletFile);
 
-  const remaining = fs.readdirSync(getWalletsDir()).filter(f => f.endsWith('.json') && f !== 'config.json');
+  const remaining = fs.readdirSync(getWalletsDir())
+    .filter(f => f.endsWith('.json') && f !== 'config.json')
+    .filter(f => { try { readWalletJson(path.join(getWalletsDir(), f)); return true; } catch { return false; } });
 
   if (remaining.length === 0) {
     config.defaultWallet = null;
