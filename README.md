@@ -53,6 +53,7 @@ nansen wallet <subcommand> [options]
 nansen mcp install <client>           # add the Nansen MCP server to Claude Code/Desktop or Cursor
 nansen completion <bash|zsh|fish>     # shell completions (no API key needed)
 nansen schema [command] [--pretty]    # full command reference (no API key needed)
+nansen cache stats                    # what the local caches hold (no API key needed)
 ```
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`
@@ -322,8 +323,72 @@ after upgrading the CLI to pick up new commands.
 | `--pretty` | Human-readable JSON |
 | `--table` | Table format |
 | `--stream` | NDJSON output for large results |
+| `--paginate` | Fetch every page of a list command (alias `--all`); bound with `--max-pages <n>` (default 10; ignored without pagination) |
 | `--labels <label>` | Smart Money label filter |
 | `--smart-money` | Filter for Smart Money addresses only |
+| `--cache` | Serve this invocation from the local cache (see [Caching](#caching)) |
+| `--no-cache` | Bypass the cache for this invocation |
+| `--debug` | Trace every HTTP request on stderr (see [Debugging](#debugging)) |
+
+## Caching
+
+Response caching is **off by default** and opt-in per invocation:
+
+```bash
+nansen research token screener --chain solana --cache              # cache this result
+nansen research token screener --chain solana --cache --cache-ttl 60
+nansen research token screener --chain solana --cache --no-cache   # veto: always live
+```
+
+`NANSEN_NO_CACHE=1` does the same as `--no-cache` without a flag, for wrappers
+that cannot change the command line.
+
+With `--cache` on, every read the CLI makes through the Nansen API client is
+cached — all of `nansen research ...`, plus `alerts list` and `alerts get`.
+Never cached: `account`, `web search`, `web fetch`, the `alerts`
+create/update/toggle/delete commands, `agent`, every `trade`, `bridge`, `wallet`
+and `mcp` command, and `perp` trading. The analytics commands `perp screener`
+and `perp leaderboard` are cached.
+
+Inspect and clear what is on disk:
+
+```bash
+nansen cache stats                 # entries, size, age, effective TTL per cache
+nansen cache stats --json          # the same numbers as an object
+nansen cache clear                 # delete cached API responses
+nansen cache clear cost-map        # or update-check, or all
+```
+
+`nansen cache stats` reports totals and ages. It reads timestamp metadata but does not print cached payloads, request parameters, or cache keys. `nansen cache clear` deletes only files in the selected cache. Credentials, wallets, saved quotes, and config are never changed. CLI startup loads the saved config as usual.
+
+| Cache | Location | TTL |
+|-------|----------|-----|
+| `responses` | `~/.nansen/cache` | `--cache-ttl`, default 300s |
+| `cost-map` | `~/.nansen/cost-map.json` | 24h |
+| `update-check` | `~/.nansen/update-check.json` | 24h |
+
+## Debugging
+
+`--debug` (or `NANSEN_DEBUG=1`) prints HTTP trace events to **stderr**, so stdout stays pure JSON/CSV and stays pipeable:
+
+```bash
+nansen research token screener --chain solana --debug
+nansen research token screener --chain solana 2>trace.log | jq .   # trace to a file, JSON to jq
+```
+
+```
+[nansen:debug] http.request method=POST url=https://api.nansen.ai/api/v1/token-screener attempt=1/4
+[nansen:debug] http.response method=POST url=https://api.nansen.ai/api/v1/token-screener status=429 duration_ms=182 request_id=6f1c0f2a-0000-4000-8000-0000000000aa attempt=1
+[nansen:debug] http.retry method=POST url=https://api.nansen.ai/api/v1/token-screener status=429 attempt=1 reason=retry-after delay_ms=1100 retry_after_ms=1000
+[nansen:debug] http.request method=POST url=https://api.nansen.ai/api/v1/token-screener attempt=2/4
+[nansen:debug] http.response method=POST url=https://api.nansen.ai/api/v1/token-screener status=200 duration_ms=143 request_id=6f1c0f2a-0000-4000-8000-0000000000ab attempt=2
+```
+
+Events: `http.request`, `http.response`, `http.retry`, `http.error`, `http.cache_hit` (answered from the local cache, no request made).
+
+For `http.response`, `duration_ms` is the elapsed time from starting the attempt until response headers arrive (time to first byte / TTFB). It deliberately excludes downloading and parsing the response body. For `http.error`, `duration_ms` is the elapsed time until the transport failed before any response headers arrived.
+
+**What the trace never contains.** No API keys, wallet keys, mnemonics or payment signatures; no `Authorization`, `apikey` or `Payment-Signature` header values (header values are not traced at all); no request or response bodies. Query-string values are blanked whenever the parameter name mentions a key, token, secret, signature, password or auth, and any remaining credential-shaped value is blanked too. This intentionally includes public identifiers under names such as `token` and `token_address`, so use the original command—not the trace alone—to confirm which token was queried. Redaction deliberately fails closed: bare 64-character hex URL segments and long opaque/base58 identifiers are hidden even when they are public transaction, block, or Solana signature identifiers, because they are indistinguishable from key material without endpoint-specific assumptions. Long values are truncated. Paste a trace into a bug report as-is — but a quick read before you share is always wise.
 
 ## Supported Chains
 
@@ -340,9 +405,29 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 **Use `--stream` for large results** — outputs NDJSON instead of buffering a giant array.
 
+**Use `--paginate` to fetch every page** of a list command in one call instead of looping over `--page`:
+```bash
+nansen smart-money netflow --chain solana --limit 100 --paginate --max-pages 5
+```
+`--limit` is the page size and `--max-pages` (default 10; ignored without pagination) caps the number of requests — every page is a
+separate, separately billed API call. Server completion metadata (`total_pages`, `total`, or
+`is_last_page`) is honoured so a known final page is not fetched again. Rows are de-duplicated and
+the response gains
+`pagination: { page, pages_fetched, next_page, complete }`; when `complete` is `false`, resume with
+`--page <next_page>`. The stderr credit summary totals the live page requests; cached pages are not
+counted as charges. Traversal trusts the server's `total`; if a live dataset changes or reports
+inconsistent totals while pages are being fetched, later rows can be omitted. Combine with
+`--stream` for NDJSON.
+
 **ENS names** work anywhere `--address` is accepted: `--address vitalik.eth`
 
 ## Output Format
+
+> **Compatibility note:** `--table`, `--format csv`, and `--stream` now render an
+> unambiguous descriptive top-level array (for example, `trades` or `holdings`)
+> as one row per item, even without `--paginate`. Older versions rendered the
+> enclosing response object as a single row. Envelopes with multiple candidate
+> data arrays remain unexpanded.
 
 ```json
 { "success": true,  "data": <api_response> }
