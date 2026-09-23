@@ -212,10 +212,9 @@ export async function* createPaymentSignatures(response, url, options = {}) {
       const sig = await buildPaymentForRequirement(req, exported, url);
       if (sig) yield { signature: sig, network: req.network, asset: req.asset };
     } catch (err) {
-      // This payment option failed to build; try the next one, but say why
-      // (a malformed server option such as a self-sponsored feePayer would
-      // otherwise surface only as a generic "payment failed" after every
-      // option is exhausted).
+      // This payment option failed to build; say why and try the next one
+      // (otherwise a malformed server option only surfaces as a generic
+      // payment failure once every option is exhausted).
       console.error(`[x402] Skipping ${req.network} option: ${err?.message || err}`);
       continue;
     }

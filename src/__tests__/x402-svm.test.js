@@ -162,7 +162,7 @@ describe('buildUnsignedSvmTransaction', () => {
     // We verify the messageBytes starts with 0x80 (v0 prefix)
     expect(messageBytes[0]).toBe(0x80);
     // Header: numRequiredSignatures, numReadonlySignedAccounts, numReadonlyUnsignedAccounts
-    expect(messageBytes[1]).toBeGreaterThanOrEqual(2); // at least feePayer + client
+    expect(messageBytes[1]).toBe(2); // feePayer + client, one per signature slot
   });
 
   it('resolves maxAmountRequired when amount is an empty string (matches resolvePaymentAmount)', () => {
@@ -181,23 +181,31 @@ describe('buildUnsignedSvmTransaction', () => {
       .toThrow('feePayer is required');
   });
 
-  // The wire format always wrote two signature slots while buildMessageV0
-  // counted signers from the account map. A server-controlled feePayer equal
-  // to the payer collapsed the header to one required signature, producing a
-  // transaction that fails sanitization at broadcast with no useful message.
+  // The transaction always carries two signature slots. A server-supplied
+  // feePayer equal to the payer collapsed the header to one required
+  // signature, producing a transaction that fails sanitization at broadcast.
   it('refuses a feePayer equal to the paying wallet instead of building a malformed transaction', () => {
     const selfPay = { ...requirements, extra: { feePayer: wallet.address } };
     expect(() => buildUnsignedSvmTransaction(selfPay, wallet.address, blockhash))
-      .toThrow(/feePayer must be a facilitator account distinct from the paying wallet/);
+      .toThrow(/feePayer is the paying wallet .*Another payment option will be tried/);
     expect(() => createSvmPaymentPayload(selfPay, wallet.privateKey, wallet.address, 'https://r', blockhash))
-      .toThrow(/distinct from the paying wallet/);
+      .toThrow(/feePayer is the paying wallet/);
   });
 
-  it('header signer count always matches the two signature slots', () => {
-    const { messageBytes, txBase64 } = buildUnsignedSvmTransaction(requirements, wallet.address, blockhash);
-    const txBytes = Buffer.from(txBase64, 'base64');
-    expect(txBytes[0]).toBe(2); // compact-u16 signature count
-    expect(messageBytes[1]).toBe(2); // header numRequiredSignatures
+  it('createSvmPaymentPayload signs into slot 1 and leaves the facilitator slot empty', () => {
+    const encoded = createSvmPaymentPayload(requirements, wallet.privateKey, wallet.address, 'https://r', blockhash);
+    const payload = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    const txBytes = Buffer.from(payload.payload.transaction, 'base64');
+    expect(txBytes[0]).toBe(2);
+    expect(txBytes.subarray(1, 65).every(b => b === 0)).toBe(true);
+    const messageBytes = txBytes.subarray(129);
+    expect(messageBytes[1]).toBe(2);
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), base58Decode(wallet.address)]),
+      format: 'der',
+      type: 'spki',
+    });
+    expect(crypto.verify(null, messageBytes, publicKey, txBytes.subarray(65, 129))).toBe(true);
   });
 
   it('transaction has two 64-byte zero signature slots', () => {
