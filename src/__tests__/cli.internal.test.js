@@ -5103,6 +5103,16 @@ describe('profiler batch command', () => {
 // =================== profiler trace ===================
 
 describe('profiler trace command', () => {
+  let mockApi;
+  let commands;
+
+  beforeEach(() => {
+    mockApi = {
+      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
+    };
+    commands = buildCommands({});
+  });
+
   it('should appear in SCHEMA', () => {
     const trace = SCHEMA.commands.research.subcommands['profiler'].subcommands['trace'];
     expect(trace).toBeDefined();
@@ -5112,10 +5122,6 @@ describe('profiler trace command', () => {
   });
 
   it('should call traceCounterparties with correct params', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
     const result = await commands['profiler'](['trace'], mockApi, {}, {
       address: '0x0000000000000000000000000000000000000001',
       chain: 'ethereum',
@@ -5134,11 +5140,6 @@ describe('profiler trace command', () => {
   it.each(['500abc', '2.5', 'abc', '9007199254740992'])(
     'should reject malformed --delay value %s before tracing counterparties',
     async (delay) => {
-      const mockApi = {
-        addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-      };
-      const commands = buildCommands({});
-
       await expect(commands['profiler'](['trace'], mockApi, {}, {
         address: '0x0000000000000000000000000000000000000001',
         delay,
@@ -5152,11 +5153,6 @@ describe('profiler trace command', () => {
   );
 
   it('should reject negative --delay before tracing counterparties', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
-
     await expect(commands['profiler'](['trace'], mockApi, {}, {
       address: '0x0000000000000000000000000000000000000001',
       delay: '-5',
@@ -5169,11 +5165,6 @@ describe('profiler trace command', () => {
   });
 
   it('should reject bare --delay before tracing counterparties', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
-
     await expect(commands['profiler'](['trace'], mockApi, { delay: true }, {
       address: '0x0000000000000000000000000000000000000001',
     })).rejects.toThrow('--delay requires a non-negative safe integer value');
@@ -5182,11 +5173,6 @@ describe('profiler trace command', () => {
   });
 
   it('should clamp depth to 1-5 range', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
-
     const result1 = await commands['profiler'](['trace'], mockApi, {}, {
       address: '0x0000000000000000000000000000000000000001',
       depth: '10',
@@ -5205,11 +5191,6 @@ describe('profiler trace command', () => {
   it.each(['abc', '2.5', 'Infinity', '9007199254740992'])(
     'should reject malformed --depth value %s before querying counterparties',
     async (depth) => {
-      const mockApi = {
-        addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-      };
-      const commands = buildCommands({});
-
       await expect(commands['profiler'](['trace'], mockApi, {}, {
         address: '0x0000000000000000000000000000000000000001',
         depth,
@@ -5224,11 +5205,6 @@ describe('profiler trace command', () => {
   );
 
   it('should reject repeated valued --depth options clearly', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
-
     await expect(commands['profiler'](['trace'], mockApi, {}, {
       address: '0x0000000000000000000000000000000000000001',
       depth: ['2', '3'],
@@ -5239,11 +5215,6 @@ describe('profiler trace command', () => {
   });
 
   it('should reject bare --depth instead of silently using the default', async () => {
-    const mockApi = {
-      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
-    };
-    const commands = buildCommands({});
-
     await expect(commands['profiler'](['trace'], mockApi, { depth: true }, {
       address: '0x0000000000000000000000000000000000000001',
       delay: '0',
@@ -6064,6 +6035,39 @@ describe('traceCounterparties', () => {
     });
 
     expect(result.depth).toBe(5);
+  });
+
+  it('should clamp negative depth to min 1', async () => {
+    const mockApi = {
+      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
+    };
+
+    const result = await traceCounterparties(mockApi, {
+      address: '0x0000000000000000000000000000000000000001',
+      chain: 'ethereum',
+      depth: -1,
+      delayMs: 0,
+    });
+
+    expect(result.depth).toBe(1);
+  });
+
+  it('should reject malformed depth before querying counterparties', async () => {
+    const mockApi = {
+      addressCounterparties: vi.fn().mockResolvedValue({ counterparties: [] }),
+    };
+
+    await expect(traceCounterparties(mockApi, {
+      address: '0x0000000000000000000000000000000000000001',
+      chain: 'ethereum',
+      depth: 'abc',
+      delayMs: 0,
+    })).rejects.toMatchObject({
+      code: ErrorCode.INVALID_PARAMS,
+      message: '--depth must be a safe integer; received: abc',
+    });
+
+    expect(mockApi.addressCounterparties).not.toHaveBeenCalled();
   });
 
   it('should reject missing address', async () => {

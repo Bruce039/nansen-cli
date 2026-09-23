@@ -845,12 +845,11 @@ export async function batchProfile(api, params = {}) {
   return { results, total: addresses.length, completed: results.filter(r => !r.error).length };
 }
 
-function normalizeTraceDepth(raw) {
+function normalizeTraceDepth(raw, flags = {}) {
   const value = parseSafeIntegerOption(
     'depth',
     { depth: raw },
-    {},
-    2,
+    flags,
   );
 
   return Math.max(1, Math.min(value, 5));
@@ -876,7 +875,7 @@ function normalizeTraceWidth(raw) {
 }
 
 export async function traceCounterparties(api, params = {}) {
-  let { address, chain = 'ethereum', depth = 2, width = 10, days = 30, delayMs = 1000 } = params;
+  let { address, chain = 'ethereum', depth = 2, depthFlags = {}, width = 10, days = 30, delayMs = 1000 } = params;
   if (!address) {
     throw new NansenError('address is required for trace', ErrorCode.MISSING_PARAM);
   }
@@ -895,7 +894,7 @@ export async function traceCounterparties(api, params = {}) {
   if (!validation.valid) {
     throw new NansenError(validation.error, ErrorCode.INVALID_ADDRESS);
   }
-  const clampedDepth = normalizeTraceDepth(depth);
+  const clampedDepth = normalizeTraceDepth(depth, depthFlags);
   const clampedWidth = normalizeTraceWidth(width);
   const visited = new Set();
   const nodes = [];
@@ -1748,16 +1747,10 @@ export function buildCommands(deps = {}) {
         'trace': () => {
           rejectBlankOption(options.delay, 'delay', '1000');
           rejectBlankOption(options.depth, 'depth', '2');
-          if (flags.depth) {
-            throw new NansenError(
-              '--depth requires a safe integer value',
-              ErrorCode.INVALID_PARAMS,
-            );
-          }
-          const depth = options.depth ?? 2;
+          const depth = options.depth;
           const width = parseNonNegativeSafeIntegerOption('width', options, flags, 10);
           const delayMs = parseNonNegativeSafeIntegerOption('delay', options, flags, 1000);
-          return traceCounterparties(apiInstance, { address, chain, depth, width, days, delayMs });
+          return traceCounterparties(apiInstance, { address, chain, depth, depthFlags: flags, width, days, delayMs });
         },
         'compare': () => {
           const addrs = parseAddressList(options.addresses);
