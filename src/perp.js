@@ -20,6 +20,7 @@ import {
   buildUsdClassTransferAction,
   l1Eip712,
   userSignedEip712,
+  validateTpsl,
 } from './hl-action.js';
 import { submitExchange } from './hl-client.js';
 import { hlApiUrl, hlNetwork } from './hl-env.js';
@@ -696,6 +697,13 @@ OPTIONS:
       const tp = options['take-profit'] !== undefined ? parsePositiveNumber(options['take-profit'], 'take-profit') : undefined;
       const sl = options['stop-loss'] !== undefined ? parsePositiveNumber(options['stop-loss'], 'stop-loss') : undefined;
       const isBuy = side === 'buy' || side === 'long';
+
+      // buildOrderAction re-checks this, but that call happens after the signing
+      // context is resolved and after ensureBuilderApproved has already signed
+      // and submitted the one-time builder-fee approval. A stop/take on the
+      // wrong side of entry would otherwise cost the user an on-chain approval
+      // and a password prompt for an order that was never valid.
+      validateTpsl({ isBuy, price, takeProfit: tp ?? null, stopLoss: sl ?? null });
 
       // One meta read serves both the advisory precision warning and the
       // required build metadata. Fetched fail-open so a meta outage doesn't
